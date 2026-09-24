@@ -23,3 +23,9 @@ def configure_logging():
     logging.getLogger("uvicorn.access").disabled = True
     for name in ("kiteconnect", "urllib3", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.CRITICAL)
+    # SDK callbacks log raw connection reasons, potentially containing credential URLs.
+    for name in ("kiteconnect.ticker", "twisted", "autobahn"):
+        logger = logging.getLogger(name)
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+        logger.setLevel(logging.CRITICAL + 1)

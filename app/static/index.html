@@ -1,3 +1,25 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NIFTY market dashboard</title><link rel="stylesheet" href="/static/style.css"><script src="/static/dashboard.js" defer></script></head>
-<body><main><p class="eyebrow">PHASE 1 · READ-ONLY MARKET DATA</p><h1>Market overview</h1><p>Zerodha: <strong id="status">Checking connection…</strong></p><a href="/kite/login">Connect to Zerodha</a><button id="refresh" type="button">Refresh</button><p id="message" role="status" aria-live="polite"></p><section aria-label="Index values"><article><h2>NIFTY 50</h2><p id="nifty">—</p></article><article><h2>BANK NIFTY</h2><p id="bank">—</p></article><article><h2>INDIA VIX</h2><p id="vix">—</p></article></section><p>Last updated: <time id="updated">—</time></p><p class="note">Refreshes every 15 seconds. Values are the latest available quotes and may reflect the previous session when the market is closed. Last updated is the retrieval time.</p></main></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NIFTY market dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body><main>
+  <p class="eyebrow">PHASE 2 · READ-ONLY MARKET FEED</p>
+  <h1>Market overview</h1>
+  <p>ZERODHA: <strong id="status">CHECKING…</strong></p>
+  <p>MARKET FEED: <strong id="feed">DISCONNECTED</strong> · <span id="freshness">STALE / MARKET CLOSED</span></p>
+  <p class="note">WebSocket connectivity: <span id="socket">DISCONNECTED</span></p>
+  <a href="/kite/login">Connect to Zerodha</a><button id="refresh" type="button">Refresh</button>
+  <p id="message" role="status" aria-live="polite"></p>
+  <section aria-label="Index values">
+    <article><h2>NIFTY 50</h2><p id="nifty">—</p><div class="note">Last tick: <time id="nifty-tick">—</time></div><div id="nifty-source" class="note">Waiting for data</div></article>
+    <article><h2>BANK NIFTY</h2><p id="bank">—</p><div class="note">Last tick: <time id="bank-tick">—</time></div><div id="bank-source" class="note">Waiting for data</div></article>
+    <article><h2>INDIA VIX</h2><p id="vix">—</p><div class="note">Last tick: <time id="vix-tick">—</time></div><div id="vix-source" class="note">Waiting for data</div></article>
+  </section>
+  <p>Last tick received: <time id="updated">—</time></p>
+  <p class="note">Live state refreshes every 2 seconds. REST fallback refreshes at most every 15 seconds and is labelled separately. Ticks older than 30 seconds are stale. Quiet nights, weekends and holidays are expected; market-open status is not yet determined by an exchange calendar.</p>
+</main></body></html>

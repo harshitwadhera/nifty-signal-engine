@@ -33,3 +33,8 @@ class SessionStore:
     def clear(self):
         with self.lock:
             self._token = self._expires_at = None
+
+    def clear_if(self, token):
+        with self.lock:
+            if self._token == token:
+                self.clear()

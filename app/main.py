@@ -1,6 +1,7 @@
 import logging
 import secrets
 import time
+from contextlib import asynccontextmanager
 from threading import Lock
 from urllib.parse import urlencode, urlparse
 
@@ -15,6 +16,8 @@ from app.config import ROOT, Settings
 from app.logging_config import configure_logging
 from app.market import RestMarketDataProvider
 from app.session import SessionStore
+from app.streaming.kite_stream import KiteStream
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger("market_app")
 
@@ -24,13 +27,23 @@ class AppError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def create_app(settings=None, client_factory=None, session=None, provider=None):
+def create_app(settings=None, client_factory=None, session=None, provider=None, stream=None):
     configure_logging()
     settings = settings or Settings.load()
     session = session or SessionStore()
     provider = provider or RestMarketDataProvider()
     client_factory = client_factory or (lambda: KiteConnect(api_key=settings.api_key, timeout=10, debug=False))
-    app = FastAPI(title="Read-only index dashboard", docs_url=None, redoc_url=None)
+    stream = stream or KiteStream(settings, session, client_factory)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        stream.start()
+        try:
+            yield
+        finally:
+            await run_in_threadpool(stream.shutdown)
+
+    app = FastAPI(title="Read-only index dashboard", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
     pending = {}
     pending_lock = Lock()
@@ -65,6 +78,14 @@ def create_app(settings=None, client_factory=None, session=None, provider=None):
     def connection():
         return {"configured": settings.configured,
                 "connection_status": "session_available" if session.get() else "disconnected"}
+
+    @app.get("/api/market/live")
+    def live():
+        return stream.live()
+
+    @app.get("/api/stream/status")
+    def stream_status():
+        return stream.status()
 
     @app.get("/kite/login")
     def login():
