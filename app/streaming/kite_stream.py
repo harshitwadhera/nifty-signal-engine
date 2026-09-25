@@ -40,6 +40,23 @@ class KiteStream:
         self._symbols = {}
         self.include_futures = False  # Enabled by production application wiring.
         self._resolution_period = None
+        self._option_symbols = {}
+        self._option_sink = None
+
+    def set_option_consumer(self, consumer):
+        with self._lock:
+            self._option_sink = consumer
+
+    def set_option_contracts(self, contracts):
+        desired = {c.instrument_token: c.trading_symbol for c in contracts}
+        with self._lock:
+            if desired == self._option_symbols:
+                return
+            removed = sorted(set(self._option_symbols)-set(desired))
+            added = sorted(set(desired)-set(self._option_symbols))
+            self._option_symbols = desired
+            if self._transport and self._status == "connected":
+                self._transport.update_subscriptions(added, removed)
 
     def start(self):
         with self._lock:
@@ -132,8 +149,13 @@ class KiteStream:
             if not self._valid(generation):
                 return
             try:
-                ws.subscribe(list(self._symbols))
-                ws.set_mode(ws.MODE_FULL, list(self._symbols))
+                tokens = list(self._symbols) + list(self._option_symbols)
+                existing = getattr(ws, "subscribed_tokens", {})
+                obsolete = sorted(set(existing)-set(tokens)) if isinstance(existing, dict) else []
+                if obsolete:
+                    ws.unsubscribe(obsolete)
+                ws.subscribe(tokens)
+                ws.set_mode(ws.MODE_FULL, tokens)
                 self._status = "connected"
                 self._last_connected = self.state.clock().isoformat()
             except Exception:
@@ -168,6 +190,15 @@ class KiteStream:
                 if not isinstance(raw, dict):
                     continue
                 token, price = raw.get("instrument_token"), raw.get("last_price")
+                if isinstance(token, int) and token in self._option_symbols:
+                    if self._option_sink:
+                        try:
+                            from app.options.state import normalize_quote
+                            received = self.state.clock()
+                            self._option_sink(token, normalize_quote(raw, received, "stream"), received)
+                        except Exception:
+                            logger.warning("", extra={"event": "option_tick_rejected"})
+                    continue
                 if not isinstance(token, int) or token not in self._symbols or not number(price):
                     continue
                 timestamp = raw.get("exchange_timestamp")

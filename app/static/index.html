@@ -7,9 +7,10 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/dashboard.js" defer></script>
   <script src="/static/structure.js" defer></script>
+  <script src="/static/options.js" defer></script>
 </head>
 <body><main>
-  <p class="eyebrow">PHASE 3 · READ-ONLY MARKET STRUCTURE</p>
+  <p class="eyebrow">PHASE 4 · READ-ONLY OPTIONS INTELLIGENCE</p>
   <h1>Market overview</h1>
   <p>ZERODHA: <strong id="status">CHECKING…</strong></p>
   <p>MARKET FEED: <strong id="feed">DISCONNECTED</strong> · <span id="freshness">STALE / MARKET CLOSED</span></p>
@@ -29,5 +30,11 @@
     <article><h2>BANK NIFTY</h2><div id="banknifty-structure"></div></article>
   </div>
   <p class="note">Day levels, opening range and EMAs use spot prices. VWAP uses the displayed futures contract only. Observed-volume VWAP is a sampled estimate since observation began; exchange-session VWAP includes the full session. Missing or warming-up metrics display Unavailable. These are descriptive metrics, not trading recommendations.</p>
+  <h2 class="section-title">Options Intelligence</h2>
+  <p class="note">Full-expiry metrics use REST snapshots. ATM details can use newer streaming quotes. OI changes are measured from the first session observation; previous-close OI is shown separately. OI walls and max pain are descriptive levels, not guaranteed support/resistance or trade recommendations.</p>
+  <div class="structure-grid">
+    <article><h2>NIFTY Options</h2><label>Expiry <select id="nifty-options-expiry"><option value="">Nearest listed</option></select></label><div id="nifty-options"></div></article>
+    <article><h2>BANKNIFTY Options</h2><label>Expiry <select id="banknifty-options-expiry"><option value="">Nearest listed</option></select></label><div id="banknifty-options"></div></article>
+  </div>
   <p class="note">Live state refreshes every 2 seconds. REST fallback refreshes at most every 15 seconds and is labelled separately. Ticks older than 30 seconds are stale. Quiet nights, weekends and holidays are expected; market-open status is not yet determined by an exchange calendar.</p>
 </main></body></html>

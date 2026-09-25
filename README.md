@@ -1,6 +1,6 @@
-# NIFTY market dashboard — Phase 3
+# NIFTY market dashboard — Phase 4
 
-Local, single-user, read-only FastAPI application using the official `kiteconnect` Python SDK and KiteTicker. Displays NIFTY 50 (`NSE:NIFTY 50`), BANK NIFTY (`NSE:NIFTY BANK`) and INDIA VIX (`NSE:INDIA VIX`). Adds front-month NIFTY/BANKNIFTY futures, candles, futures VWAP, spot market structure and completed-candle EMA9/EMA20. No signals, orders, automatic trading, option-chain analytics, RSI or MACD. Phases 1 and 2 were live-tested successfully by the user with their real Zerodha account.
+Local, single-user, read-only FastAPI application using the official `kiteconnect` Python SDK and KiteTicker. Displays NIFTY 50 (`NSE:NIFTY 50`), BANK NIFTY (`NSE:NIFTY BANK`) and INDIA VIX (`NSE:INDIA VIX`). Adds front-month NIFTY/BANKNIFTY futures, candles, futures VWAP, spot market structure and completed-candle EMA9/EMA20. Adds descriptive NIFTY/BANKNIFTY options analytics in Phase 4. No signals, recommendations, orders, automatic trading, RSI or MACD. Phases 1–3 were live-tested successfully by the user with their real Zerodha account.
 
 ## Windows setup (PowerShell)
 
@@ -119,13 +119,75 @@ The dashboard retains live feed status and adds two Market Structure panels. It 
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
-node --test tests/dashboard.test.cjs tests/structure.test.cjs
+node --test tests/dashboard.test.cjs tests/structure.test.cjs tests/options.test.cjs
 ```
 
 Tests mock all Zerodha calls and isolate SQLite under temporary directories. They cover the original Phase 1/2 behavior, all candle intervals, boundaries, lateness, duplicates, partial data, futures discovery/rollover, volume/VWAP, opening range, previous-session caching, EMAs, database uniqueness/reopen, recovery and API validation. Node tests use the built-in runner; no npm packages are needed. An existing Starlette/httpx deprecation warning does not affect passing tests.
 
 For Phase 3 live acceptance, restart the single-worker application using the same startup command and log in manually. Check `/api/market/live` lists five instruments, `/api/market/structure` progresses through history recovery, and candles/EMA values warm up. Verify the futures contract/expiry, opening range and previous levels against Kite. History entitlement or temporary API errors may leave metrics unavailable; authentication and live streaming remain independently visible. The previously running Phase 2 server is not automatically restarted by development changes.
 
-No Phase 4, trade execution, option chain, or CALL/PUT recommendation is implemented.
+Phase 4 extends this architecture below. No Phase 5, trade execution or CALL/PUT recommendation is implemented.
 
 References: [authentication](https://kite.trade/docs/connect/v3/user/), [WebSocket packet fields](https://kite.trade/docs/connect/v3/websocket/), [historical data](https://kite.trade/docs/connect/v3/historical/), [instrument metadata](https://kite.trade/docs/connect/v3/market-quotes/), [official Python SDK](https://github.com/zerodha/pykiteconnect).
+
+
+## Phase 4 options architecture
+
+The existing single KiteTicker connection still owns the five Phase 3 instruments. `OptionsService` adds a separate normalized options path and three bounded background workers (tick processing, REST refresh, previous-close OI warm-up). Options never enter the candle aggregator. Failures stay in the options layer; token rejection invalidates only the matching authentication session.
+
+- `options/discovery.py` reads cached NFO metadata for index, expiry, strike, CE/PE, lot size, token and symbol. It exposes `get_expiries`, `get_option_contract`, actual-strike ATM selection and expiry selections. Nearest/next use sorted eligible listed expiries, with settlement at 15:30 IST. Monthly is reported only when a listed option expiry matches an actual futures expiry. No expiry weekday is assumed. Metadata is refreshed every 15 minutes and on session/day changes; cached expired contracts are filtered immediately at settlement.
+- The **live layer** subscribes to the nearest expiry, ATM ±10 available strikes, CE+PE, for each index. One strike-step movement is tolerated; two steps shift the window using subscribe/unsubscribe differences. Duplicate sets are ignored. Reconnect replays the desired base and option subscriptions and removes obsolete tokens. Normalization captures LTP, OI, cumulative volume, top bid/ask quantities, depth and exchange timestamp. The 10,000-item queue never blocks the base feed; dropped events are counted in responses.
+- The **full-expiry layer** uses REST quote batches of at most 200 instruments every 20 seconds by default. One extra explicitly requested expiry per index may be refreshed alongside nearest. Snapshots are replaced as a batch, including missing contracts: old missing quotes are not carried forward to pretend coverage. Batch start/end times expose that a multi-request snapshot is not atomic. A missing quote leaves full-chain calculations unavailable.
+- `kite_client.py` shares quote/historical request budgets across phases: quote requests are spaced by at least 1.1 seconds, historical by 0.4 seconds. These apply to this single application process/API key; other applications using the same key must budget their traffic separately. No new SDK or numerical-library dependency is required.
+- `options/state.py` separates normalized contract metadata from market observations. Each session/day starts with a fresh first-valid-observation baseline, established during standard market hours. `price_change`, `volume_change`, `oi_change_session`/`oi_change_intraday`, and `oi_change_percent` use that observation baseline. They are not changes from the previous close. Zero-baseline percentages are null. A quote predating the baseline cannot produce a session change.
+- Previous-close OI uses derivative daily history with `oi=True`, matched to the actual previous session date established by Phase 3. An older available OI record is never substituted. Values (including unavailable/null) are cached in SQLite by actual symbol and as-of date. A paced worker prioritizes ATM and alternates indices; remaining chains warm up gradually. Failures back off per contract instead of blocking all other baselines. `oi_change_vs_previous_close` and `previous_oi_session_date` stay separate from session changes.
+- `options/analytics.py` produces descriptive LONG_BUILDUP, SHORT_BUILDUP, SHORT_COVERING, LONG_UNWINDING, NEUTRAL or UNAVAILABLE labels. Price/OI percentage thresholds are configurable. Writing zones require price decline plus OI addition, rather than assuming every OI addition is writing. Walls and top-three rankings are levels, not guaranteed support/resistance. Additions/unwinding consistently use session-baseline OI changes.
+- Full-expiry OI/volume PCR, OI walls and max pain use **only the full REST snapshot**, never a mixture of live and REST observations. Full coverage and the necessary field availability are required; incomplete chains return null/empty aggregate results. Near-ATM PCR is separately labelled and requires complete coverage of that window. Max pain minimizes OI-weighted settlement intrinsic payout over listed strikes and is secondary descriptive information. Ties select the lower listed strike.
+- `options/pricing.py` uses European Black-76 when a fresh same-expiry futures quote exists. It never substitutes a different-expiry future for that purpose. Otherwise it uses Black-Scholes with an explicit zero-dividend spot assumption. These are locally calculated model estimates, not exchange-provided Greeks. Prices use a valid bid/ask midpoint, falling back to LTP. Time is ACT/365 to the listed expiry's 15:30 IST. IV uses bounded bisection (0.01%–500% annual volatility); expired, nonfinite, nonpositive, arbitrage-inconsistent or out-of-bracket prices return null. No API contains NaN/Infinity. `iv` is annual decimal volatility, delta is per unit of the labelled model underlying, gamma per underlying point, theta per calendar day, and vega per 1 percentage point of volatility. The zero-dividend fallback and snapshot timing can differ from broker platform values.
+- Liquidity states LIQUID/MODERATE/POOR use midpoint-relative spread percentage, OI, volume and available top quantities. Missing, zero or crossed quotes are POOR with unavailable spread; this is a data-quality label, not a trade instruction.
+- `options/storage.py` shares the SQLite file using its own connection. Once per minute per index/expiry, it stores summary values and ATM ±5 strike details with a uniqueness key. It does not persist raw option ticks. Stored records retain coverage/staleness and clearly named OI changes. The options database remains under the existing ignored database path.
+
+### Options configuration
+
+Optional `.env` variables (defaults shown in `.env.example`):
+
+| Variable | Default |
+| --- | --- |
+| `OPTIONS_RISK_FREE_RATE` | `0.06` annual decimal |
+| `OPTIONS_REFRESH_SECONDS` | `20` (minimum 15) |
+| `OPTIONS_STALE_SECONDS` | `60` |
+| `OPTIONS_PRICE_CHANGE_PERCENT` | `0.5` |
+| `OPTIONS_OI_CHANGE_PERCENT` | `1` |
+| `OPTIONS_LIQUID_SPREAD_PERCENT` | `1` |
+| `OPTIONS_MODERATE_SPREAD_PERCENT` | `3` |
+| `OPTIONS_LIQUID_MIN_OI` / `OPTIONS_LIQUID_MIN_VOLUME` | `1000` / `100` |
+| `OPTIONS_MODERATE_MIN_OI` / `OPTIONS_MODERATE_MIN_VOLUME` | `100` / `10` |
+
+The 6% rate is a configurable model assumption, not a current market-rate claim. Restart after changing configuration. A stale spot removes ATM/spot-derived Greeks rather than inventing a current underlying value. After hours, quotes/Greeks can be unavailable or stale without indicating an application failure.
+
+### Options API
+
+- `GET /api/options/nifty?window=10`
+- `GET /api/options/banknifty?expiry=YYYY-MM-DD&window=10`
+- `GET /api/options/nifty/chain?expiry=YYYY-MM-DD&strike_min=23000&strike_max=24000&limit=100&offset=0`
+- `GET /api/options/banknifty/chain`
+
+Summary `window` is 1–30 and controls the labelled near-ATM PCR window; it does not change the stable nearest-expiry live subscription policy. An explicit listed expiry schedules a background REST refresh; its first response may be pending/incomplete. The default remains nearest. Unlisted expiries return 404, invalid dates/ranges/limits return 422. Chain pagination allows 1–500 rows (default 200), offset 0–10000; filtering does not redefine full-chain coverage.
+
+Every response exposes `last_stream_tick_at`, `last_full_chain_refresh_at`, `stale`, and coverage (expected, received/fresh, percentage, OI and volume availability). The summary also includes snapshot start time, selections, PCR scopes, OI-change definition, matched-expiry futures, front-month futures, ATM detail and model source. A missing expiry-matched future is null even if a front-month future exists. Chain rows and ATM details can overlay newer live observations and carry their own source/timestamps/stale flags; **aggregate metrics and coverage remain based on the full REST snapshot**. Previous-close OI may warm up later than quotes.
+
+### Phase 4 live acceptance checklist
+
+1. Run all Python and frontend tests above, then restart the single-worker app and manually log in.
+2. Confirm the Phase 1 REST snapshot and Phase 2/3 feed, candles and structure still work.
+3. Verify listed expiries, ATM strikes, CE/PE symbols and lots against Kite metadata; do not assume a weekly expiry exists for either index.
+4. Confirm the options panels show both indices, full-chain coverage and last refresh times. Allow the first REST refresh and historical OI warm-up to complete.
+5. Compare ATM prices/OI, full-expiry PCR and OI walls with the same expiry/coverage on the broker platform. Check session ΔOI and previous-close ΔOI are labelled separately.
+6. Check the IV model source: matched-expiry future/Black-76, or spot/Black-Scholes zero-dividend fallback. Different quotes, times, rates or dividend assumptions produce different IV/Greeks.
+7. During underlying movement, verify the subscription window shifts after the configured two-strike hysteresis, using the same WebSocket connection. Reconnect should restore the latest desired window.
+8. Verify missing quotes/stale data suppress full-chain aggregates; market-closed status is not a trading recommendation.
+9. Confirm `option_snapshots` grows at minute cadence and `option_previous_oi` caches historical values. No credentials or raw ticks should appear in the database.
+
+Phase 4 real-account acceptance has not been run by these mock tests. The existing server is not automatically restarted. No Phase 5, CALL/PUT recommendation, order placement or automatic trading is implemented.
+
+Additional references: [Kite request limits](https://kite.trade/docs/connect/v3/exceptions/), [quote batch fields](https://kite.trade/docs/connect/v3/market-quotes/), [CME options analytics](https://www.cmegroup.com/market-data/greeks-and-implied-volatility-data.html).

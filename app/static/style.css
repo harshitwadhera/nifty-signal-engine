@@ -2,3 +2,4 @@
 
 .live{color:#86efac}.stale{color:#f5cb81}article .note{margin-top:10px;font-size:.8rem}article p{margin-top:12px}
 .section-title{font-size:1.5rem;margin-top:40px}.structure-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.structure-grid dl{display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:.9rem}.structure-grid dt{color:#acbfd7}.structure-grid dd{margin:0;text-align:right;overflow-wrap:anywhere}.structure-grid p{font-size:.9rem}@media(max-width:650px){.structure-grid{grid-template-columns:1fr}}
+select{background:#101827;color:#e6edf7;border:1px solid #528ac7;border-radius:6px;padding:8px;font:inherit;max-width:100%}

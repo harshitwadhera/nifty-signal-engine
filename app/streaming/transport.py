@@ -57,6 +57,22 @@ class TickerTransport:
                 transport.abortConnection()
         dispatch(disconnect)
 
+    def update_subscriptions(self, added, removed):
+        def update():
+            try:
+                if removed:
+                    self.ticker.unsubscribe(removed)
+                if added:
+                    self.ticker.subscribe(added)
+                    self.ticker.set_mode(self.ticker.MODE_FULL, added)
+            except Exception:
+                # Keep the desired subscription set for automatic resubscription.
+                for token in removed:
+                    self.ticker.subscribed_tokens.pop(token, None)
+                for token in added:
+                    self.ticker.subscribed_tokens[token] = self.ticker.MODE_FULL
+        dispatch(update)
+
     @staticmethod
     def flush():
         if reactor.running:

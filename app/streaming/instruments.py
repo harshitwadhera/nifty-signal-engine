@@ -27,6 +27,10 @@ class InstrumentResolver:
             return deepcopy([row for row in rows if row.get("exchange") == exchange
                              and all(row.get(key) == value for key, value in criteria.items())])
 
+    def invalidate(self, exchange):
+        with self._lock:
+            self._cache.pop(exchange, None)
+
     def indices(self, client):
         instruments = []
         for symbol, friendly in INDEX_NAMES.items():
