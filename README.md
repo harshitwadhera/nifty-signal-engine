@@ -201,3 +201,31 @@ An atomic transaction and unique `(index_name, expiry, snapshot_minute, strike, 
 Test with `py -m pytest -q --basetemp=.pytest_tmp` (or `.\.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_tmp` when the Windows launcher has no registered Python).
 
 Additional references: [Kite request limits](https://kite.trade/docs/connect/v3/exceptions/), [quote batch fields](https://kite.trade/docs/connect/v3/market-quotes/), [CME options analytics](https://www.cmegroup.com/market-data/greeks-and-implied-volatility-data.html).
+
+### Phase 5.2 deterministic scoring foundation
+
+`app.signals` exposes `SignalInput`, `SignalConfig`, `CategoryScore`, `ScoreResult` and `SignalEngine`. This is a pure, in-process library: it does not read clocks, databases, HTTP or WebSocket state. Supply one index's Phase 3 structure entry and Phase 4 options summary, plus normalized India VIX data. No lifecycle, targets, stops, endpoints, dashboard integration or CALL/PUT output is implemented.
+
+```python
+from app.signals import SignalEngine, SignalInput
+
+snapshot = SignalInput(
+    index_name="NIFTY",  # or BANKNIFTY
+    as_of="2026-09-25T10:00:00+05:30",
+    structure=structure_snapshot["nifty"],
+    options=options_summary,
+    volatility={"level": 18.0, "change_percent": 2.0, "stale": False},
+)
+result = SignalEngine().score(snapshot)
+```
+
+The caller selects contemporaneous observations and marks stale sources; replay never consults today's clock or future observations. Missing/nonfinite values are unavailable. Preserve the supplied snapshot with its `as_of`, result version and configuration when replaying; Phase 5.1 chain rows alone do not contain all required price/VIX context. Structure `stale=True` suppresses price and futures scoring, options `stale=True` suppresses options scoring, and stale VIX is unavailable. EMA partial/stale flags are respected when supplied.
+
+Default category budgets are price/trend 30, options/positioning 30, breadth 15, volatility 10, futures/structure 15. Breadth is reserved and returns unavailable with zero available weight. Available weight counts observed scoring components, including neutral observations; missing components are never redistributed or scaled to 100. Bullish and bearish points are separate descriptive evidence totals, not confidence probabilities. Each category reports direction, evidence and contradictions. A net score within 10% of its available weight is neutral. The result intentionally has no overall directional recommendation.
+
+- Price allocates 25% of its budget to opening-range breakout, 20% previous-day range, 15% previous close, 10% current day-range position, and 30% shared EMA9/EMA20 consensus across 5m/15m/30m. EMA intervals cannot each earn a full trend budget. Missing intervals reduce coverage. Numeric comparisons use a configurable 0.05% deadband; day range upper/lower thresholds default to 80%/20%.
+- Options allocates 35% to writing/unwinding, 30% liquid ATM CE/PE behavior, 15% OI-wall breakout, and 20% PCR confirmation. Correlated OI observations share a budget; OI additions alone cannot identify writers. Ratios (full OI, full volume, near-ATM OI) above 1.2/below 0.8 confirm existing non-PCR evidence only; disagreement is recorded. PCR alone cannot establish or reverse direction. ATM data with poor/unknown liquidity or invalid supplied IV is excluded. Missing IV does not invalidate otherwise liquid positioning. Max pain is secondary context with no points.
+- Futures uses 60% for future versus VWAP and 40% for agreeing spot/future moves. Optional `future_change_percent` and `spot_change_percent` must use the same reference period; Phase 3 does not currently supply these, so this component stays unavailable unless the caller supplies both. Opposing moves are flagged. Basis is context only and cannot determine direction.
+- VIX level supplies neutral risk context (low at/below 12, elevated at/above 25) and optional intraday change indicates rising/falling outside ±3%. It awards no bullish/bearish points; VIX rising never automatically implies bearish index direction.
+
+All category weights, component fractions and thresholds live in `SignalConfig`, which validates finite values and budgets. These are explicit initial heuristics, not calibrated or backtested trading rules. Tests cover both indices, opposing/neutral evidence, replay repeatability, coverage, bounds, staleness and nonfinite inputs.
