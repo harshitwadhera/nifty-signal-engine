@@ -1,11 +1,18 @@
 """Runtime adapter only. The scoring and decision engine remains pure."""
 from app.signals import SignalEngine, SignalInput
 from app.signals.engine import positive
-from dataclasses import replace
+from dataclasses import replace, asdict
+from copy import deepcopy
+from threading import Event, Thread, RLock
+import logging
 from .execution_models import ExecutionConfig, instant
 from .planning import SignalPlanner
 from .lifecycle import SignalJournal, SignalLifecycle, Submission
 from .structure import completed_bars, confirmed_swings
+from .explanation import safe
+from .lifecycle import ACTIVE
+
+logger = logging.getLogger('market_app')
 
 
 class LiveSignals:
@@ -13,6 +20,76 @@ class LiveSignals:
         self.stream, self.structure, self.options, self.breadth = stream, structure, options, breadth
         self.engine = SignalEngine()
         self.lifecycle = SignalLifecycle(SignalPlanner(self.engine, execution_config or ExecutionConfig.load()), SignalJournal(journal_path))
+        self.stop = Event()
+        self.thread = None
+        self.view_lock = RLock()
+        self.views = {}
+
+    def start(self):
+        if self.thread or self.stop.is_set():
+            return
+        self.thread = Thread(target=self._run, daemon=True, name='signal-observer')
+        self.thread.start()
+
+    def _run(self):
+        while not self.stop.is_set():
+            for index in ('NIFTY', 'BANKNIFTY'):
+                if self.stop.is_set():
+                    break
+                try:
+                    self.evaluate(index)
+                except Exception:
+                    with self.view_lock:
+                        self.views.pop(index, None)
+                    logger.warning('', extra={'event': 'signal_observation_unavailable'})
+            self.stop.wait(2)
+
+    def current(self, index):
+        with self.view_lock:
+            result = deepcopy(self.views.get(index))
+        if result and 0 <= (self.stream.state.clock()-instant(result['last_updated'])).total_seconds() <= 10:
+            return result
+        return {'index': index, 'decision': 'NO_TRADE', 'state': None, 'confidence': 0,
+                'bullish_score': 0, 'bearish_score': 0, 'category_scores': {}, 'record': None,
+                'evidence': [], 'contradictions': [], 'last_updated': result['last_updated'] if result else None,
+                'data_quality': {'stale': True, 'blocking_reasons': ['Waiting for fresh signal observations']}}
+
+    def history(self, **filters):
+        with self.lifecycle.lock:
+            return self.lifecycle.journal.history(**filters)
+
+    def detail(self, signal_id):
+        with self.lifecycle.lock:
+            return self.lifecycle.journal.detail(signal_id)
+
+    def _publish(self, index, snapshot, submission):
+        decision = self.engine.decide(snapshot)
+        scored = asdict(decision)
+        record = submission.record
+        active = record and record.state in ACTIVE
+        original = None
+        if active:
+            with self.lifecycle.lock:
+                detail = self.lifecycle.journal.detail(record.signal_id)
+            original = (detail or {}).get('creation_explanation')
+        original_scores = (original or {}).get('scores', {})
+        quality = dict(scored['data_quality'])
+        quality['planning_reasons'] = list(submission.reasons)
+        quality['stale'] = any(not quality.get(k, False) for k in ('structure_fresh', 'options_fresh', 'breadth_fresh', 'vix_fresh'))
+        result = {**scored, 'index': index, 'decision': record.plan.direction if active else 'NO_TRADE',
+                  'state': record.state if record else None, 'record': asdict(record) if record else None,
+                  'data_quality': quality, 'last_updated': snapshot.as_of}
+        if active and original_scores:
+            for field in ('confidence', 'bullish_score', 'bearish_score', 'category_scores', 'evidence', 'contradictions'):
+                if field in original_scores:
+                    result[field] = original_scores[field]
+        result['current_qualification'] = scored
+        result['score_basis'] = 'candidate_creation' if active and original_scores else 'current_observation'
+        if not active:
+            result['confidence'] = 0
+        with self.view_lock:
+            self.views[index] = safe(result)
+        return submission
 
     def snapshot(self, index):
         if index not in ("NIFTY", "BANKNIFTY"):
@@ -62,8 +139,13 @@ class LiveSignals:
             reference = active.plan.entry_trigger.instrument
             rows = completed_bars(bars if reference == symbol else future_bars, now, reference)
             record = self.lifecycle.advance(active.signal_id, snapshot, contracts, rows[-1] if rows else None)
-            return Submission('NO_TRADE', record, False, ('Existing signal lifecycle observed; no new signal',))
-        return self.lifecycle.submit(snapshot, contracts)
+            return self._publish(index, snapshot, Submission('NO_TRADE', record, False, ('Existing signal lifecycle observed; no new signal',)))
+        return self._publish(index, snapshot, self.lifecycle.submit(snapshot, contracts))
 
     def close(self):
+        self.stop.set()
+        if self.thread:
+            self.thread.join(timeout=30)
+            if self.thread.is_alive():
+                raise RuntimeError('Signal observer shutdown timed out')
         self.lifecycle.close()

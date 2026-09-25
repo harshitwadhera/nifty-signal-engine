@@ -327,3 +327,60 @@ SIGNAL_OPTION_MIN_VOLUME=100
 ```
 
 Mock tests cover structural triggers, confirmation, invalidation, R:R, both option directions, illiquidity, targets/stops, duplicate persistence, expiry and cutoff. Live market acceptance remains pending; the app is not automatically restarted.
+
+### Phase 5.5 explainability, outcomes, APIs and dashboard
+
+Phase 5.5 completes the runtime integration described in the earlier phases. A single `signal-observer` worker evaluates NIFTY and BANKNIFTY every two seconds using the existing normalized market state, structure, options and breadth services. It performs no broker requests and opens no additional WebSocket. It creates candidates and advances existing lifecycles without requiring an open dashboard. Shutdown stops the observer before closing its input services. Run one Uvicorn worker, as required for the existing connection/session owner.
+
+The deterministic engine and planner still consume supplied snapshots; the worker is only their runtime adapter. Candidate creation uses only data available at that observation time. Future/partial candles cannot establish a swing or confirm a candidate. Changing later prices never rewrites the original explanation.
+
+SQLite schema is created automatically in the existing ignored market database:
+
+| Table | Purpose |
+| --- | --- |
+| `signals` | Indexed current record: ID, index, direction, created/updated times, state and frozen plan |
+| `signal_events` | Append-only, uniquely sequenced CANDIDATE, CONFIRMED and all subsequent state changes, each with its observation-time explanation |
+| `signal_outcomes` | Latest observed outcome metrics per signal |
+| `signal_lifecycle` | Existing Phase 5.4 restart/deduplication journal, retained for compatibility |
+
+Each state transition and its latest record/outcome are saved in one SQLite transaction. Explanations include bullish/bearish and category scores, evidence, contradictions, data quality, the supplied price/futures structure, options summary, VIX and breadth, scoring/execution configuration and version, and the confirmation candle where applicable. Relevant chain rows include ATM ±2 strikes and the reported OI walls; the frozen plan includes the selected contract, trigger, invalidation and targets. This context is labelled as a subset; full-chain aggregates are preserved in the options summary and Phase 5.1 continues its independent full-chain minute archive. Replay can reproduce scoring from the captured snapshot/configuration without consulting subsequent data or today's constituents.
+
+Legacy Phase 5.4 signals remain visible, but missing original evidence or outcome entries are explicitly unavailable; this migration never invents past snapshots or fills. Event explanations are immutable even when later records advance. No NO_TRADE rows are written, and optional periodic diagnostic persistence is not enabled. Finite JSON guards replace nonfinite values with NULL, and sensitive credential/authorization/URL fields are excluded from captured context.
+
+Outcome tracking starts only at CONFIRMED and records:
+
+- Observed entry time, conservative entry underlying price, and the fresh selected option LTP when available.
+- T1/T2/stop hit flags, observation timestamps, seconds to each event, and duration since confirmation.
+- MFE and MAE in underlying points and R units, using direction-normalized excursions against the frozen invalidation risk.
+- Terminal model result in R, exit time and underlying reference price. T2 uses the target level; stops use the worse of the structural stop/current observation for gaps. Expiry uses the latest fresh observed underlying only if there is no detected observation gap; otherwise result R remains NULL. Open signals do not claim a realized R result.
+
+These are **sampled observations and model outcomes, not broker fills, executable quotes or option P&L**. The two-second worker plus eligible completed bars can miss intrabar excursions; intervals over 30 seconds between observations set `observation_gap`. Hit timestamps are detection times, not invented exchange execution times. Bars touching both stop and target are stop-first and cannot add favorable excursion credit. Existing confirmed signals resume observation after restart; gaps remain explicit, and no future backfill changes their original entry or evidence.
+
+Read-only APIs (GET requests never create or advance signals):
+
+| Endpoint | Response |
+| --- | --- |
+| `/api/signals/nifty` | Latest NIFTY panel result; normal NO_TRADE while waiting or blocked |
+| `/api/signals/banknifty` | Latest BANKNIFTY panel result |
+| `/api/signals/current` | Both results in a `signals` list |
+| `/api/signals/history` | `items`, `total`, `limit`, `offset`; newest creation first, stable ID tie-break |
+| `/api/signals/{signal_id}` | Latest `record`, ordered `events`, immutable `creation_explanation`; unknown ID is 404 |
+
+History filters: `index=nifty|banknifty`, `direction=CALL|PUT`, `state` (one of the seven lifecycle states), and inclusive `date_from`/`date_to` in `YYYY-MM-DD` on IST creation date. Pagination uses `limit` 1–100 (default 25) and `offset` 0–100000. Invalid filters return 422. For example: `/api/signals/history?index=nifty&state=CONFIRMED&limit=25&offset=0`. State filters match the latest state; transition history remains in the detail response.
+
+Dashboard panels refresh every five seconds and show direction/NO TRADE, state, confidence, scores/category breakdown, structural plan/R:R, contract and selection-time liquidity, evidence, contradictions, quality and update time. Active signals show their creation scores/evidence; `current_qualification` separately reports present scoring, while data quality always reflects the latest observation. Terminal or blocked setups show NO TRADE normally. A worker result older than ten seconds is suppressed as NO_TRADE/waiting, and frontend fetch failures clear prior actionable presentation. Outcome details are also shown when entry was confirmed. All text is rendered through `textContent`.
+
+No order placement, automatic execution or broker position management is present. Phase 1–4 endpoints and authentication behavior remain unchanged. `.env`, SQLite files and WAL/SHM files remain ignored. Restart the app to activate this phase; installation/configuration commands above still apply.
+
+#### Phase 5 live acceptance checklist
+
+1. Run `py -m pytest -q --basetemp=.pytest_tmp`. If the Windows launcher reports no installed Python, use `.\.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_tmp`. Run `node --test tests/dashboard.test.cjs tests/structure.test.cjs tests/options.test.cjs tests/signals.test.cjs` with your Node executable.
+2. Restart a single application worker and manually authenticate. Check Phase 1 snapshots, live feed, candles/structure and options panels still work. No username/password/TOTP automation is used.
+3. Confirm full constituent discovery, explicit weighted/unweighted breadth, fresh VIX and options coverage. Missing membership, EMA warm-up or incomplete data should produce ordinary NO TRADE with reasons.
+4. Compare a candidate's trigger, support/resistance targets and selected ATM/adjacent ITM contract with the captured snapshot. Verify liquidity, nearest expiry, cutoff and minimum R:R checks; do not expect frequent signals.
+5. Use `/api/signals/{signal_id}` to verify the immutable CANDIDATE explanation, then a new completed 5m confirmation and the CONFIRMED evidence/outcome entry. Confirm the candidate snapshot did not change afterward.
+6. Observe T1/T2/stop or expiry transitions and check timestamps, durations, MFE/MAE and model R definitions. Restart during a test session and check deduplication plus explicit observation gaps; do not treat sampled outcomes as executed returns.
+7. Test history pagination/index/state/date filters, API 404/422 handling and neutral NO TRADE presentation. Disconnect the feed and confirm stale quality/expiry behavior without false target hits.
+8. Verify no new candidates/confirmations at or after 15:00 IST, pending candidate expiry, and session expiry at 15:30. Confirm there are no broker orders and no secrets in browser responses, logs or tracked files.
+
+Automated tests use mocks and do not replace this real-account live acceptance. The development workflow does not restart the running app automatically.

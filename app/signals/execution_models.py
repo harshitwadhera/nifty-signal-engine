@@ -1,5 +1,5 @@
 """Underlying signal plans and observed lifecycle; never broker orders/fills."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from math import isfinite
 from typing import Literal
@@ -124,3 +124,4 @@ class SignalRecord:
     confirmed_t2_rr: float | None = None
     last_bar_end: str | None = None
     history: tuple[LifecycleEvent, ...] = ()
+    outcome: dict = field(default_factory=dict)

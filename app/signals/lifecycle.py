@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import sqlite3
 from threading import RLock
+from contextlib import contextmanager, nullcontext
 
 from .decision import fresh
 from .engine import positive
@@ -12,6 +13,8 @@ from .execution_models import (EntryTrigger, LifecycleEvent, SelectedOption, Sig
                                SignalRecord, StructuralLevel, instant)
 from .planning import SignalPlanner, risk_reward
 from .selection import select_option
+from .explanation import explain, safe
+from .outcomes import entered, observe, transitioned
 
 ACTIVE = {'CANDIDATE', 'CONFIRMED', 'TARGET1_HIT'}
 
@@ -19,6 +22,7 @@ ACTIVE = {'CANDIDATE', 'CONFIRMED', 'TARGET1_HIT'}
 class SignalJournal:
     """Optional durable idempotency/history, sharing the ignored market DB path."""
     def __init__(self, path=':memory:'):
+        self.transaction_depth = 0
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('''CREATE TABLE IF NOT EXISTS signal_lifecycle (
@@ -26,13 +30,90 @@ class SignalJournal:
             session_date TEXT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL)''')
         self.db.execute('''CREATE INDEX IF NOT EXISTS signal_lifecycle_session
             ON signal_lifecycle(session_date, index_name, state)''')
+        self.db.execute('''CREATE TABLE IF NOT EXISTS signals (
+            signal_id TEXT PRIMARY KEY, index_name TEXT NOT NULL, direction TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, state TEXT NOT NULL,
+            record TEXT NOT NULL)''')
+        self.db.execute('''CREATE INDEX IF NOT EXISTS signals_history
+            ON signals(created_at DESC, signal_id DESC)''')
+        self.db.execute('''CREATE INDEX IF NOT EXISTS signals_filter
+            ON signals(index_name, state, direction, created_at DESC)''')
+        self.db.execute('''CREATE TABLE IF NOT EXISTS signal_events (
+            signal_id TEXT NOT NULL, sequence INTEGER NOT NULL, state TEXT NOT NULL,
+            observed_at TEXT NOT NULL, payload TEXT NOT NULL,
+            PRIMARY KEY(signal_id, sequence))''')
+        self.db.execute('''CREATE TABLE IF NOT EXISTS signal_outcomes (
+            signal_id TEXT PRIMARY KEY, payload TEXT NOT NULL)''')
+        # Existing Phase 5.4 records are visible, with missing historical evidence
+        # explicitly NULL. Never attach today's snapshot to yesterday's signal.
+        self.db.execute('''INSERT OR IGNORE INTO signals
+            SELECT signal_id, index_name, json_extract(payload, '$.plan.direction'),
+                   json_extract(payload, '$.created_at'), json_extract(payload, '$.updated_at'), state, payload
+            FROM signal_lifecycle''')
+        for signal_id, payload in self.db.execute('SELECT signal_id, payload FROM signal_lifecycle').fetchall():
+            legacy = json.loads(payload)
+            self.db.execute('INSERT OR IGNORE INTO signal_outcomes VALUES (?,?)',
+                            (signal_id, json.dumps(legacy.get('outcome', {}), allow_nan=False)))
+            for sequence, event in enumerate(legacy.get('history', ())):
+                self.db.execute('INSERT OR IGNORE INTO signal_events VALUES (?,?,?,?,?)',
+                    (signal_id, sequence, event['state'], event['at'],
+                     json.dumps({'event': event, 'record': None, 'explanation': None}, allow_nan=False)))
         self.db.commit()
 
-    def save(self, record):
-        with self.db:
+    @contextmanager
+    def transaction(self):
+        if self.transaction_depth:
+            yield
+            return
+        self.transaction_depth += 1
+        try:
+            with self.db:
+                yield
+        finally:
+            self.transaction_depth -= 1
+
+    def save(self, record, context=None):
+        payload = json.dumps(safe(asdict(record)), allow_nan=False)
+        with (nullcontext() if self.transaction_depth else self.db):
             self.db.execute('INSERT OR REPLACE INTO signal_lifecycle VALUES (?,?,?,?,?)',
                 (record.signal_id, record.plan.index_name, instant(record.created_at).date().isoformat(),
-                 record.state, json.dumps(asdict(record), allow_nan=False)))
+                 record.state, payload))
+            self.db.execute('INSERT OR REPLACE INTO signals VALUES (?,?,?,?,?,?,?)',
+                (record.signal_id, record.plan.index_name, record.plan.direction, record.created_at,
+                 record.updated_at, record.state, payload))
+            self.db.execute('INSERT OR REPLACE INTO signal_outcomes VALUES (?,?)',
+                            (record.signal_id, json.dumps(safe(record.outcome), allow_nan=False)))
+            for sequence, event in enumerate(record.history):
+                evidence = context if context and instant(context['as_of']) == instant(event.at) else None
+                event_payload = {'event': asdict(event), 'record': asdict(record) if evidence else None,
+                                 'explanation': evidence}
+                self.db.execute('INSERT OR IGNORE INTO signal_events VALUES (?,?,?,?,?)',
+                    (record.signal_id, sequence, event.state, event.at, json.dumps(safe(event_payload), allow_nan=False)))
+
+    def detail(self, signal_id):
+        row = self.db.execute('SELECT record FROM signals WHERE signal_id=?', (signal_id,)).fetchone()
+        if not row:
+            return None
+        events = [json.loads(r[0]) for r in self.db.execute(
+            'SELECT payload FROM signal_events WHERE signal_id=? ORDER BY sequence', (signal_id,))]
+        return {'record': json.loads(row[0]), 'events': events,
+                'creation_explanation': events[0]['explanation'] if events else None}
+
+    def history(self, limit=25, offset=0, index=None, state=None, direction=None, date_from=None, date_to=None):
+        conditions, values = [], []
+        for column, value in (('index_name', index), ('state', state), ('direction', direction)):
+            if value is not None:
+                conditions.append(column+'=?')
+                values.append(value)
+        for op, value in (('>=', date_from), ('<=', date_to)):
+            if value is not None:
+                conditions.append('substr(created_at,1,10)'+op+'?')
+                values.append(str(value))
+        where = ' WHERE '+' AND '.join(conditions) if conditions else ''
+        total = self.db.execute('SELECT count(*) FROM signals'+where, values).fetchone()[0]
+        rows = self.db.execute('SELECT record FROM signals'+where+' ORDER BY created_at DESC, signal_id DESC LIMIT ? OFFSET ?',
+                               [*values, limit, offset]).fetchall()
+        return {'items': [json.loads(r[0]) for r in rows], 'total': total, 'limit': limit, 'offset': offset}
 
     def load(self):
         records = {}
@@ -67,23 +148,37 @@ class SignalLifecycle:
         self.journal = journal or SignalJournal()
         self.records = self.journal.load()
         self.lock = RLock()
+        self.context = None
+
+    @contextmanager
+    def _operation(self):
+        with self.lock:
+            try:
+                with self.journal.transaction():
+                    yield
+            except Exception:
+                # Restore the memory mirror as well as rolling back SQLite.
+                self.records = self.journal.load()
+                raise
 
     def active(self, index):
         with self.lock:
             return next((r for r in self.records.values() if r.plan.index_name == index and r.state in ACTIVE), None)
 
     def _save(self, record):
-        self.journal.save(record)
+        self.journal.save(record, self.context)
         self.records[record.signal_id] = record
         return record
 
     def _transition(self, record, state, now, reason, **changes):
+        changes.setdefault('outcome', transitioned(record, state, now))
         return self._save(replace(record, state=state, updated_at=now.isoformat(),
             history=(*record.history, LifecycleEvent(state, now.isoformat(), reason)), **changes))
 
     def submit(self, snapshot, contracts):
         now = instant(snapshot.as_of)
-        with self.lock:
+        with self._operation():
+            self.context = explain(snapshot, contracts, self.planner)
             existing = self.active(snapshot.index_name)
             if existing:
                 self.advance(existing.signal_id, snapshot, contracts)
@@ -133,7 +228,8 @@ class SignalLifecycle:
 
     def advance(self, signal_id, snapshot, contracts=(), bar=None):
         now = instant(snapshot.as_of)
-        with self.lock:
+        with self._operation():
+            self.context = explain(snapshot, contracts, self.planner, bar)
             record = self.records[signal_id]
             if snapshot.index_name != record.plan.index_name:
                 raise ValueError('Signal index mismatch')
@@ -163,6 +259,9 @@ class SignalLifecycle:
             sign = 1 if plan.direction == 'CALL' else -1
             adverse = min(low, price) if sign == 1 else max(high, price)
             favorable = max(high, price) if sign == 1 else min(low, price)
+            stop_touched = sign*(adverse-plan.invalidation.level) <= 0
+            if record.state != 'CANDIDATE':
+                record = self._save(replace(record, outcome=observe(record, price, favorable, adverse, now, stop_touched)))
             # A bar can touch both stop and target without revealing ordering.
             # Conservatively invalidate/stop first; never infer a profitable fill.
             if sign*(adverse-plan.invalidation.level) <= 0:
@@ -193,6 +292,8 @@ class SignalLifecycle:
                     return self._transition(record, 'INVALIDATED', now, 'Confirmation risk/reward below minimum')
                 return self._transition(record, 'CONFIRMED', now, 'Completed 5m candle and fresh qualification confirmed',
                                         confirmation_price=entry, confirmed_t1_rr=rr,
+                                        outcome=entered(entry, next((positive(r.get('ltp')) for r in contracts
+                                            if r.get('instrument_token') == selected.instrument_token), None), now),
                                         confirmed_t2_rr=risk_reward(plan.direction, entry, plan.invalidation.level, plan.target2.level) if plan.target2 else None)
             if sign*(favorable-plan.target1.level) >= 0 and record.state == 'CONFIRMED':
                 record = self._transition(record, 'TARGET1_HIT', now, 'Underlying target 1 observed')

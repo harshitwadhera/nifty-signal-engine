@@ -35,7 +35,7 @@ class AppError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def create_app(settings=None, client_factory=None, session=None, provider=None, stream=None, engine=None, options=None):
+def create_app(settings=None, client_factory=None, session=None, provider=None, stream=None, engine=None, options=None, signals=None):
     configure_logging()
     settings = settings or Settings.load()
     session = session or SessionStore()
@@ -56,24 +56,26 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
                                             os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3")))
         breadth = BreadthService(stream, session, client_factory) if managed_stream else None
         app.state.breadth = breadth
-        app.state.signals = LiveSignals(stream, engine, options, breadth,
-            journal_path=os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3"))) if breadth else None
+        app.state.signals = signals or (LiveSignals(stream, engine, options, breadth,
+            journal_path=os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3"))) if breadth else None)
         engine.start()
         try:
             stream.start()
             options.start()
             if breadth:
                 breadth.start()
+            if app.state.signals:
+                app.state.signals.start()
             yield
         finally:
             try:
                 try:
-                    if breadth:
-                        await run_in_threadpool(breadth.shutdown)
+                    if app.state.signals:
+                        await run_in_threadpool(app.state.signals.close)
                 finally:
                     try:
-                        if app.state.signals:
-                            await run_in_threadpool(app.state.signals.close)
+                        if breadth:
+                            await run_in_threadpool(breadth.shutdown)
                     finally:
                         await run_in_threadpool(options.shutdown)
             finally:
@@ -108,6 +110,43 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     def require_config():
         if not settings.configured:
             raise AppError(503, "not_configured", "Set Kite credentials in the local .env file.")
+
+    def signal_service():
+        service = app.state.signals
+        if service is None:
+            raise AppError(503, 'signals_unavailable', 'Signal observations are not available.')
+        return service
+
+    @app.get('/api/signals/current')
+    def current_signals():
+        service = signal_service()
+        return {'signals': [service.current(index) for index in ('NIFTY', 'BANKNIFTY')]}
+
+    @app.get('/api/signals/history')
+    def signal_history(limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0, le=100000),
+                       index: Literal['nifty', 'banknifty'] | None = None,
+                       state: Literal['CANDIDATE', 'CONFIRMED', 'INVALIDATED', 'TARGET1_HIT', 'TARGET2_HIT', 'STOPPED', 'EXPIRED'] | None = None,
+                       direction: Literal['CALL', 'PUT'] | None = None,
+                       date_from: date | None = None, date_to: date | None = None):
+        if date_from and date_to and date_from > date_to:
+            raise AppError(422, 'invalid_date_range', 'Start date must not exceed end date.')
+        return signal_service().history(limit=limit, offset=offset, index=index.upper() if index else None,
+            state=state, direction=direction, date_from=date_from, date_to=date_to)
+
+    @app.get('/api/signals/nifty')
+    def nifty_signal():
+        return signal_service().current('NIFTY')
+
+    @app.get('/api/signals/banknifty')
+    def banknifty_signal():
+        return signal_service().current('BANKNIFTY')
+
+    @app.get('/api/signals/{signal_id}')
+    def signal_detail(signal_id: str):
+        result = signal_service().detail(signal_id)
+        if result is None:
+            raise AppError(404, 'signal_not_found', 'Signal not found.')
+        return result
 
     @app.get("/health")
     def health():
