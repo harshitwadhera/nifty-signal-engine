@@ -1,6 +1,6 @@
-# NIFTY market dashboard — Phase 2
+# NIFTY market dashboard — Phase 3
 
-Local, single-user, read-only FastAPI application using the official `kiteconnect` Python SDK and KiteTicker. Displays NIFTY 50 (`NSE:NIFTY 50`), BANK NIFTY (`NSE:NIFTY BANK`) and INDIA VIX (`NSE:INDIA VIX`). No signals, orders, automatic trading, options analytics, indicators or candle aggregation. Phase 1 was live-tested successfully by the user with their real Zerodha account.
+Local, single-user, read-only FastAPI application using the official `kiteconnect` Python SDK and KiteTicker. Displays NIFTY 50 (`NSE:NIFTY 50`), BANK NIFTY (`NSE:NIFTY BANK`) and INDIA VIX (`NSE:INDIA VIX`). Adds front-month NIFTY/BANKNIFTY futures, candles, futures VWAP, spot market structure and completed-candle EMA9/EMA20. No signals, orders, automatic trading, option-chain analytics, RSI or MACD. Phases 1 and 2 were live-tested successfully by the user with their real Zerodha account.
 
 ## Windows setup (PowerShell)
 
@@ -52,6 +52,8 @@ Run exactly one worker and one application process. Do not enable auto-reload if
 | `GET /api/market/snapshot` | Fetch three index quotes; successful retrieval confirms connection |
 | `GET /api/market/live` | In-memory ticks, per-instrument freshness and feed status |
 | `GET /api/stream/status` | Safe feed connectivity and lifecycle timestamps |
+| `GET /api/market/structure` | Spot structure, futures VWAP/basis and EMA state |
+| `GET /api/candles/{symbol}?interval=5m&limit=100` | Completed history plus any developing candle |
 
 Snapshots contain `connection_status`, `last_updated` (UTC retrieval timestamp), `partial`, and an `instruments` array with `symbol`, `name`, `value`, `available`, and `quote_timestamp` when supplied by Kite. The dashboard displays retrieval time in IST. Missing quotes are null/Unavailable, never fabricated. Outside market hours, latest quotes may be from the previous session.
 
@@ -65,32 +67,65 @@ Structured application logs contain only fixed event names, timestamp, severity 
 
 Authentication uses a short-lived, single-use random state bound to an HttpOnly SameSite cookie via Kite's `redirect_params`. Responses disable caching and referrer forwarding. The API key necessarily appears in the official login URL; the API secret and access token never do.
 
-## Architecture and verification
+## Phase 3 architecture
 
-`config.py` loads configuration; `session.py` owns session lifetime; `market.py` retains the unchanged REST snapshot implementation. `main.py` wires the stream into FastAPI lifespan and exposes read-only state routes. It contains no WebSocket implementation.
+```text
+KiteTicker → normalized Tick → MarketState subscriber queue
+                                      ↓
+                               MarketEngine worker
+                                ↙             ↘
+                       CandleAggregator       futures VWAP
+                              ↓
+                    completed candles → SQLite
+                              ↑
+                     historical recovery worker
+                              ↓
+                 structure / candles APIs → dashboard
+```
 
-The streaming modules are:
+`streaming/instruments.py` resolves the three NSE indices and nearest unexpired NFO FUT contracts by underlying, segment, instrument type and expiry. No futures symbols, tokens or expiry dates are hardcoded. Metadata is cached per exchange/day. `KiteStream` checks the resolution period daily and at 15:30 IST; on expiry day, the contract remains eligible until 15:30, then moves to the next expiry. Replacement uses the existing single-connection teardown/generation guards. Historical storage always uses the **actual contract symbol**, never a continuous alias that could mix expiries.
 
-- `streaming/instruments.py`: caches instrument metadata per exchange and IST date, resolves exact exchange/trading-symbol/segment matches, and fails safely if required indices are missing or ambiguous. `find(client, exchange, **criteria)` preserves all metadata columns so future expiry/strike queries can reuse it. No tokens are hardcoded; no derivative subscriptions are implemented.
-- `streaming/kite_stream.py`: one locked session owner. A background monitor checks session changes/expiry once per second, discovers instruments, and starts one KiteTicker connection. Re-login detaches the previous connection and resets state. Generation guards discard late callbacks from old sessions. Metadata/startup failures get at most three attempts with backoff; KiteTicker gets five reconnect attempts with exponential delay capped at 30 seconds. Exhaustion remains disconnected until manual re-login or app restart. Quiet ticks do not trigger reconnects. A token rejection clears that session without invalidating a newer login.
-- `streaming/transport.py`: marshals connect/disconnect operations onto Twisted's reactor. Pending handshakes and active sockets are cancelled before starting a replacement. The SDK is pinned to the tested version because the adapter retains its factory connector for cancellation. Shutdown stops monitoring/retries, disconnects the socket, and drains queued teardown. The daemon reactor stays idle until process exit (Twisted cannot restart a stopped reactor).
-- `streaming/market_state.py`: thread-safe in-memory quotes with null unavailable fields, counts, and a 30-second freshness threshold. It publishes immutable broker-independent `Tick` events into bounded subscriber queues. Future consumers use `state.subscribe()`/`unsubscribe()` and drain their queue independently; overflow drops new events and increments `dropped_events` instead of blocking the market feed. Consumers requiring complete tick histories must handle overflow before analytics are implemented.
+`streaming/market_state.py` publishes immutable internal `Tick` events. The model supports `symbol`, `timestamp`, last price, cumulative session volume, OI, OHLC and exchange average traded price where provided. Index volume/OI are not inferred. Candle code has no dependency on KiteTicker. Its bounded queue has 20,000 slots; overflow marks developing candles partial and is visible in structure status. Future consumers can subscribe separately.
 
-Full streaming mode supplies the index fields available from Kite. No equity volume, OI, or depth is inferred. Local receipt times use UTC; naive exchange timestamps emitted by the SDK are interpreted in the host timezone used by its `datetime.fromtimestamp` parser. The dashboard formats dates in IST.
+`analytics/session.py` uses `ZoneInfo("Asia/Kolkata")`; the `tzdata` dependency supports Windows. Standard sessions are 09:15–15:30 IST, Monday–Friday. No candles are invented on a holiday: historical bars are authoritative session evidence. Previous-session levels select the latest actual daily bar before today within a 45-calendar-day lookback, not simply yesterday. Special weekend/evening sessions are outside this phase's standard session schedule.
 
-`/api/stream/status` exposes `status` (authentication_required, connecting, connected, reconnecting, disconnected or stale), `websocket_status` (transport state), `last_connected_at`, `last_disconnected_at`, `last_tick_received_at`, and `stale`. `/api/market/live` adds instrument token, trading symbol, friendly name, price, OHLC, exchange timestamp, receipt timestamp, count, and per-instrument stale status. Instrument tokens are public identifiers, not authentication credentials. `market_open` is currently null: freshness is not an exchange calendar. A connected but quiet socket reports `websocket_status: connected`, `status: stale`, not an application failure.
+`analytics/candles.py` builds 1m, 5m, 15m and 30m candles anchored to 09:15. For example, the first 30m candle is 09:15–09:45; the last 30m bucket is truncated to 15:15–15:30. Exchange timestamps are used when available, otherwise receipt timestamps. SDK naive exchange timestamps are interpreted using the host timezone that its parser used. Future-dated timestamps beyond five seconds are rejected.
 
-The dashboard prefers received WebSocket values, labels old values STALE / MARKET CLOSED, and uses the unchanged REST snapshot only for instruments without any streaming price. Fallback requests are limited to one per 15 seconds, labelled with retrieval time, and never represented as ticks. SDK/Twisted connection-reason logs are suppressed because upstream errors can embed credential-bearing URLs. Application logs remain fixed structured events.
+A five-second lateness watermark accepts modest reordering and sets open/close by event time. Older ticks are rejected; historical recovery repairs gaps instead of rewriting closed candles from late ticks. Identical instrument/timestamp/price/volume/OHLC snapshots are deduplicated with a bounded recent cache. Without a broker event ID, identical snapshots in the same exchange second cannot be distinguished from retransmits; `tick_count` counts accepted updates, not exchange trades. No-data intervals remain absent. In-progress bars are never stored. Mid-bucket starts, missing minute coverage and known feed gaps are marked `partial` and excluded from EMA/opening-range calculations until repaired.
 
-Tests inject a mock SDK client and make no external API requests. They cover authentication/state replay, expiry, missing credentials, snapshot mapping, partial quotes, sanitized failures, dashboard assets and security headers. Live login and quote entitlement must additionally be tested with your own credentials:
+Live cumulative volume must have a valid baseline; the first observed cumulative value is **not** allocated to the current candle. Deltas that cross candle boundaries cannot be assigned precisely, so affected live candle volume remains null. Historical futures bars supply their authoritative interval volume later. Index candle volume is always null. Historical tick counts are unknown and remain null, not zero. Candles expose `completed`, `partial`, and `source` in addition to the requested price/time/volume fields.
 
-1. Run pytest successfully.
-2. Start the app and check `/health`.
-3. Configure credentials, log in manually and verify all three quotes and timestamp.
-4. Restart the app and verify the dashboard requires login again.
+`analytics/storage.py` uses SQLite WAL and a `(symbol, interval, candle_start)` primary key. It persists completed candles and a small previous-session-level cache, never raw ticks or credentials. Historical corrections upsert existing bars without duplicates; partial imports cannot downgrade a complete candle. The default database is `data/market.sqlite3`; override with `MARKET_DB_PATH` in `.env` if needed. Database files and `.env` are Git-ignored. Keep the database on a local nonsynced drive when possible; do not share a live WAL database between processes.
 
-Phase 2 live acceptance: restart the app using the same command, manually authenticate, confirm WebSocket connectivity, and during market activity verify tick timestamps/counts advance at `/api/market/live`. Outside market hours, STALE / MARKET CLOSED with a connected socket is expected. Phase 3 is not implemented.
+`analytics/history.py` restores history from SQLite immediately through the aggregator query interface and fetches missing context in a background worker after login. Initial warm-up requests up to ten calendar days of 1m history for the current symbols; subsequent passes fetch missing/partial session coverage, aligned to 30m boundaries. Full-session and previous-level caches avoid redundant completed-history requests. Calls are paced at least 0.4 seconds apart, checked about every 60 seconds, and use the existing SDK timeout. Completed historical minutes seed a developing larger candle without inventing the missing portion of the current minute. Missing history remains unavailable and is retried. Actual candle history, not assumed holiday dates, controls recovery and EMA warm-up.
 
-Tests use only mock credentials and connections. Run `python -m pytest -q` for authentication, REST regression, streaming lifecycle, state, metadata, expiry, concurrency and security checks. Optional dashboard behavior tests use Node's built-in runner: `node --test tests/dashboard.test.cjs` (no npm packages). The installed Starlette version emits one existing TestClient/httpx deprecation warning. Phase 2 real-account WebSocket acceptance remains a manual check; this implementation does not claim it has run. The existing `.venv` can be used directly via `.\.venv\Scripts\python.exe`.
+`analytics/indicators.py` implements SMA-seeded EMA9/EMA20 from completed, nonpartial **spot** candles for 5m/15m/30m. At least 9/20 eligible bars are required. Comparison flags use the last completed spot candle close (exposed as `price_basis`), not the developing candle. No trading decisions are produced.
 
-References: [official authentication documentation](https://kite.trade/docs/connect/v3/user/), [quote documentation](https://kite.trade/docs/connect/v3/market-quotes/), [official Python SDK](https://github.com/zerodha/pykiteconnect).
+Futures VWAP uses cumulative traded volume correctly. When Kite supplies valid exchange average traded price plus nonzero volume, `vwap_method=exchange_session_average` represents the full session and survives a mid-session login. Without that field, the engine computes `sum(last_price × positive_volume_delta) / sum(positive_volume_delta)` after establishing a baseline. This is a **sampled observed-window estimate**, labelled `observed_volume_deltas` and `vwap_full_session=false`, not an exact reconstruction of the morning. Historical OHLC cannot reconstruct exact VWAP, so it is never used as a substitute. Missing/zero volume and counter resets make VWAP unavailable until valid data resumes. Spot volume is never used for VWAP.
+
+Opening range requires all 15 complete 1m spot candles from 09:15 through 09:29. If any are missing/partial, OR fields remain null. Previous high/low/close are cached per symbol/as-of session date. Day OHLC prefers the supplied spot snapshot; complete available history can supply fallback levels. Futures basis is current future minus current spot; it is not an arbitrage signal. Staleness and recovery status remain visible.
+
+## Endpoints and symbols
+
+`GET /api/market/snapshot` retains its original three-index REST contract. The streaming live endpoint now also includes the two discovered futures.
+
+`GET /api/market/structure` returns `nifty`, `banknifty`, `NIFTY_FUT`, `BANKNIFTY_FUT`, session/as-of timestamps, history-recovery status and dropped tick-event count. NIFTY/BANKNIFTY sections include spot/future/basis, day levels, previous session/date, opening range/state, futures VWAP/source/coverage, stale flag, and `5m`/`15m`/`30m` EMA fields. Null means unavailable or warming up.
+
+`GET /api/candles/NIFTY?interval=5m&limit=100` returns chronological candles. Intervals: `1m`, `5m`, `15m`, `30m`; limits: 1–1000. Supported aliases: `NIFTY`, `BANKNIFTY`, `NIFTY_FUT`, `BANKNIFTY_FUT`; spot names `NIFTY 50`, `NIFTY BANK`, `INDIA VIX` and currently subscribed actual futures symbols are also accepted. Futures aliases resolve to the current actual contract. Invalid interval/limit returns 422; unknown/unresolved symbol returns 404. Inspect `completed` and `partial` before consuming a candle.
+
+The dashboard retains live feed status and adds two Market Structure panels. It labels futures VWAP separately from spot day/OR/EMA metrics, shows source and stale state, and clears panels on request failure. Structure refreshes every five seconds.
+
+## Verification and live acceptance
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+node --test tests/dashboard.test.cjs tests/structure.test.cjs
+```
+
+Tests mock all Zerodha calls and isolate SQLite under temporary directories. They cover the original Phase 1/2 behavior, all candle intervals, boundaries, lateness, duplicates, partial data, futures discovery/rollover, volume/VWAP, opening range, previous-session caching, EMAs, database uniqueness/reopen, recovery and API validation. Node tests use the built-in runner; no npm packages are needed. An existing Starlette/httpx deprecation warning does not affect passing tests.
+
+For Phase 3 live acceptance, restart the single-worker application using the same startup command and log in manually. Check `/api/market/live` lists five instruments, `/api/market/structure` progresses through history recovery, and candles/EMA values warm up. Verify the futures contract/expiry, opening range and previous levels against Kite. History entitlement or temporary API errors may leave metrics unavailable; authentication and live streaming remain independently visible. The previously running Phase 2 server is not automatically restarted by development changes.
+
+No Phase 4, trade execution, option chain, or CALL/PUT recommendation is implemented.
+
+References: [authentication](https://kite.trade/docs/connect/v3/user/), [WebSocket packet fields](https://kite.trade/docs/connect/v3/websocket/), [historical data](https://kite.trade/docs/connect/v3/historical/), [instrument metadata](https://kite.trade/docs/connect/v3/market-quotes/), [official Python SDK](https://github.com/zerodha/pykiteconnect).

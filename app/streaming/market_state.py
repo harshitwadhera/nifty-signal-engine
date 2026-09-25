@@ -18,6 +18,17 @@ class Tick:
     received_at: datetime
     exchange_timestamp: datetime | None = None
     ohlc: tuple[tuple[str, float], ...] | None = None
+    volume: int | None = None  # Cumulative traded volume for the session.
+    open_interest: int | None = None
+    average_traded_price: float | None = None
+
+    @property
+    def symbol(self):
+        return self.trading_symbol
+
+    @property
+    def timestamp(self):
+        return self.exchange_timestamp or self.received_at
 
 
 class MarketState:

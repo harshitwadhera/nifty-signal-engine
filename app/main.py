@@ -1,11 +1,13 @@
 import logging
+import os
 import secrets
 import time
 from contextlib import asynccontextmanager
 from threading import Lock
 from urllib.parse import urlencode, urlparse
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query
+from typing import Literal
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from kiteconnect import KiteConnect
@@ -18,6 +20,7 @@ from app.market import RestMarketDataProvider
 from app.session import SessionStore
 from app.streaming.kite_stream import KiteStream
 from starlette.concurrency import run_in_threadpool
+from app.analytics.engine import MarketEngine
 
 logger = logging.getLogger("market_app")
 
@@ -27,21 +30,31 @@ class AppError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def create_app(settings=None, client_factory=None, session=None, provider=None, stream=None):
+def create_app(settings=None, client_factory=None, session=None, provider=None, stream=None, engine=None):
     configure_logging()
     settings = settings or Settings.load()
     session = session or SessionStore()
     provider = provider or RestMarketDataProvider()
     client_factory = client_factory or (lambda: KiteConnect(api_key=settings.api_key, timeout=10, debug=False))
-    stream = stream or KiteStream(settings, session, client_factory)
+    if stream is None:
+        stream = KiteStream(settings, session, client_factory)
+        stream.include_futures = True
 
     @asynccontextmanager
     async def lifespan(app):
-        stream.start()
+        nonlocal engine
+        engine = engine or MarketEngine(stream.state, session, client_factory,
+                                        os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3")),
+                                        feed_status=stream.status)
+        engine.start()
         try:
+            stream.start()
             yield
         finally:
-            await run_in_threadpool(stream.shutdown)
+            try:
+                await run_in_threadpool(stream.shutdown)
+            finally:
+                await run_in_threadpool(engine.shutdown)
 
     app = FastAPI(title="Read-only index dashboard", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
@@ -86,6 +99,19 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     @app.get("/api/stream/status")
     def stream_status():
         return stream.status()
+
+    @app.get("/api/market/structure")
+    def structure():
+        return engine.structure()
+
+    @app.get("/api/candles/{symbol}")
+    def candles(symbol: str, interval: Literal["1m", "5m", "15m", "30m"] = "5m",
+                limit: int = Query(default=100, ge=1, le=1000)):
+        resolved = engine.resolve_symbol(symbol)
+        if resolved is None:
+            raise AppError(404, "unknown_symbol", "Symbol is not currently available.")
+        return {"symbol": resolved, "interval": interval,
+                "candles": engine.aggregator.candles(resolved, interval, limit)}
 
     @app.get("/kite/login")
     def login():

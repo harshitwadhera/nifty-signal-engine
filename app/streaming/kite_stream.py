@@ -38,6 +38,8 @@ class KiteStream:
         self._status = "authentication_required"
         self._last_connected = self._last_disconnected = None
         self._symbols = {}
+        self.include_futures = False  # Enabled by production application wiring.
+        self._resolution_period = None
 
     def start(self):
         with self._lock:
@@ -66,10 +68,14 @@ class KiteStream:
             if self._stop.is_set():
                 return
             token = self.session.get()
-            if token != self._token:
+            now = self.resolver.clock()
+            period = (now.date(), (now.hour, now.minute) >= (15, 30))
+            rollover = self.include_futures and self._resolution_period != period
+            if token != self._token or rollover:
                 self._detach()
                 self.state.reset()
                 self._token, self._attempts, self._next_attempt = token, 0, 0
+                self._resolution_period = period
             if not token:
                 self._status = "authentication_required"
                 return
@@ -80,7 +86,7 @@ class KiteStream:
             try:
                 client = self.client_factory()
                 client.set_access_token(token)
-                instruments = self.resolver.indices(client)
+                instruments = self.resolver.universe(client) if self.include_futures else self.resolver.indices(client)
                 if self.session.get() != token or self._stop.is_set():
                     return
                 self.state.reset(instruments)
@@ -172,7 +178,13 @@ class KiteStream:
                     timestamp = timestamp.astimezone()
                 raw_ohlc = raw.get("ohlc")
                 ohlc = tuple((k, v) for k, v in raw_ohlc.items() if k in {"open", "high", "low", "close"} and number(v)) if isinstance(raw_ohlc, dict) else None
-                self.state.update(Tick(token, self._symbols[token], price, self.state.clock(), timestamp, ohlc))
+                def quantity(key):
+                    value = raw.get(key)
+                    return int(value) if number(value) and value >= 0 and int(value) == value else None
+                average = raw.get("average_traded_price")
+                self.state.update(Tick(token, self._symbols[token], price, self.state.clock(), timestamp, ohlc,
+                                       quantity("volume_traded"), quantity("oi"),
+                                       average if number(average) and average > 0 else None))
 
     def status(self):
         with self._lock:

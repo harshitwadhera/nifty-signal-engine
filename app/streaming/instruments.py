@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import date, datetime, time
 from threading import RLock
 
 from app.session import now_ist
@@ -37,4 +38,34 @@ class InstrumentResolver:
                 raise ValueError("Invalid index token")
             instruments.append({"instrument_token": token, "trading_symbol": symbol,
                                 "friendly_name": friendly})
+        return instruments
+
+    def universe(self, client):
+        instruments = self.indices(client)
+        now = self.clock()
+        for underlying in ("NIFTY", "BANKNIFTY"):
+            rows = self.find(client, "NFO", name=underlying, instrument_type="FUT", segment="NFO-FUT")
+            candidates = []
+            for row in rows:
+                expiry = row.get("expiry")
+                if isinstance(expiry, datetime):
+                    expiry = expiry.date()
+                if isinstance(expiry, str):
+                    expiry = date.fromisoformat(expiry)
+                if isinstance(expiry, date) and (expiry > now.date() or
+                        (expiry == now.date() and now.time() < time(15, 30))):
+                    candidates.append((expiry, row))
+            if not candidates:
+                raise ValueError("No valid front-month futures contract")
+            nearest = min(expiry for expiry, _ in candidates)
+            matches = [row for expiry, row in candidates if expiry == nearest]
+            if len(matches) != 1:
+                raise ValueError("Ambiguous futures metadata")
+            row = matches[0]
+            token = int(row["instrument_token"])
+            if token <= 0 or any(i["instrument_token"] == token for i in instruments):
+                raise ValueError("Invalid futures token")
+            instruments.append({"instrument_token": token, "trading_symbol": row["tradingsymbol"],
+                                "friendly_name": underlying + " FUT", "alias": underlying + "_FUT",
+                                "expiry": nearest.isoformat()})
         return instruments
