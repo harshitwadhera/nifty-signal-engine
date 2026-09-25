@@ -188,7 +188,7 @@ Every response exposes `last_stream_tick_at`, `last_full_chain_refresh_at`, `sta
 8. Verify missing quotes/stale data suppress full-chain aggregates; market-closed status is not a trading recommendation.
 9. Confirm `option_snapshots` grows at minute cadence and `option_previous_oi` caches historical values. No credentials or raw ticks should appear in the database.
 
-Phase 4 real-account acceptance has not been run by these mock tests. The existing server is not automatically restarted. No signal generation, CALL/PUT recommendation, order placement or automatic trading is implemented.
+Phase 4 real-account acceptance has not been run by these mock tests. The existing server is not automatically restarted. Phase 5.3 below adds descriptive directional decisions; no order placement or automatic trading is implemented.
 
 ### Phase 5.1 full-chain history
 
@@ -229,3 +229,39 @@ Default category budgets are price/trend 30, options/positioning 30, breadth 15,
 - VIX level supplies neutral risk context (low at/below 12, elevated at/above 25) and optional intraday change indicates rising/falling outside ±3%. It awards no bullish/bearish points; VIX rising never automatically implies bearish index direction.
 
 All category weights, component fractions and thresholds live in `SignalConfig`, which validates finite values and budgets. These are explicit initial heuristics, not calibrated or backtested trading rules. Tests cover both indices, opposing/neutral evidence, replay repeatability, coverage, bounds, staleness and nonfinite inputs.
+
+### Phase 5.3 live breadth and directional decisions
+
+`BreadthService` resolves NSE equity tokens through the existing instrument metadata cache and subscribes through the **same KiteTicker connection**. Equity ticks use a separate bounded queue, so the original index/futures state, option subscriptions and candle APIs retain their existing behavior. Constituents are deduplicated across indices and replayed on reconnect. Login/day changes reset breadth state; subscription discovery failures retry after five minutes. No credentials, raw ticks or extra breadth tables are persisted.
+
+Membership is loaded once per session/day from the current constituent CSV downloads on the official [NIFTY 50](https://www.niftyindices.com/indices/equity/broad-based-indices/nifty--50) and [Nifty Bank](https://www.niftyindices.com/indices/equity/sectoral-indices/nifty-bank) pages. Failed NIFTY discovery is unavailable. Failed bank discovery tracks HDFCBANK, ICICIBANK, SBIN, AXISBANK and KOTAKBANK as a clearly labelled partial proxy; it cannot authorize a decision. Tokens are never hardcoded. Metadata misses remain in coverage denominators.
+
+Optionally set `BREADTH_CONSTITUENTS_FILE=data/constituents.json` to supply dated membership and weights. Each index entry has `as_of` (current IST date), `symbols` (full symbol list), `full_index` (true only for the complete index), and optional `weights` keyed by symbol. For example, a **partial proxy**, not full index configuration:
+
+```json
+{
+  "BANKNIFTY": {
+    "as_of": "2026-09-25",
+    "symbols": ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK"],
+    "full_index": false,
+    "weights": {}
+  }
+}
+```
+
+A configured file replaces both automatic lists; supply both entries for full operation. Missing/stale entries fail closed. Complete positive finite weights enable weighted percentages; missing/partial/invalid weights explicitly fall back to unweighted breadth. A/D counts and the A/D ratio always remain counts. Zero declines produce a NULL ratio, never Infinity. Percentages use fresh observed constituents; count and weight coverage against the entire membership are reported separately. Unchanged is distinct from missing or stale.
+
+Breadth includes advances, declines, unchanged, positive/negative percentages, and percent above 5m/15m EMA20 where available. Each EMA needs 20 contiguous completed nonpartial live bars. There is no additional historical fetch; warm-up restarts after a gap/session reset, and unavailable EMAs stay NULL. EMA coverage is reported separately. Constituent data becomes stale at 30 seconds. Snapshot calculations use normalized events and can also be replayed through the pure `breadth.metrics.calculate` function with historical membership/weights; never use today's constituents for an old replay.
+
+The 15-point breadth category allocates 60% to positive/negative participation and 20% to each EMA measure. Default directional participation is at least 60%; EMA measures require 90% constituent coverage before scoring. VIX remains non-directional, so the four aligned categories normally required are price, options, breadth and futures. The runtime adapter now derives spot/future changes from their respective previous closes.
+
+`SignalEngine().decide(snapshot)` returns a `DecisionResult` with `decision`, `confidence`, bullish/bearish scores, aligned category names, category scores, evidence, contradictions and data quality. Use `dataclasses.asdict(result)` for JSON serialization. CALL/PUT requires all of:
+
+- Winning score at least **70** on the original 100-point budget, at least **4** aligned categories, and separation at least **15**.
+- Fresh structure, full-chain options refresh, breadth and VIX. Each requires an explicit `stale=False` and aware timestamp no later than `SignalInput.as_of` and no older than 60 seconds. Structure, breadth and VIX use `as_of`; options uses `last_full_chain_refresh_at`. Missing critical spot/future/VIX values also block.
+- At least **95%** options quote coverage (computed from expected/received counts), and at least **90%** full-index breadth coverage. Existing Phase 4 stale flags can impose stricter full-chain requirements. A proxy cannot pass.
+- No major category contradiction: an opposing category direction, at least 25% opposing evidence within a major category, or explicit spot/future divergence blocks the result.
+
+Anything else returns **NO_TRADE**, with blocking reasons and confidence zero. Confidence for a passing decision is the winning score out of 100, **not a calibrated success probability**. Missing scores are not redistributed. Thresholds remain in `SignalConfig`; results include the configuration and scoring version `5.3.1` for replay. The Phase 5.2 `score()` interface remains available.
+
+Production wiring starts breadth after authentication through the existing app lifecycle. Internal callers can use `app.state.breadth.snapshot("NIFTY")` and `app.state.signals.decision("NIFTY")` during lifespan; equivalent BANKNIFTY calls are supported. No new API or dashboard is added, and there is no signal lifecycle, entry, stop, target or execution. Restart is required to activate this code; mock tests do not constitute live market acceptance.

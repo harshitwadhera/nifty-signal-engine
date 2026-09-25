@@ -42,6 +42,21 @@ class KiteStream:
         self._resolution_period = None
         self._option_symbols = {}
         self._option_sink = None
+        self._breadth_symbols = {}
+        self._breadth_sink = None
+
+    def set_breadth_consumer(self, consumer):
+        with self._lock:
+            self._breadth_sink = consumer
+
+    def set_breadth_contracts(self, contracts):
+        desired = {c["instrument_token"]: c["trading_symbol"] for c in contracts}
+        with self._lock:
+            removed = sorted(set(self._breadth_symbols)-set(desired))
+            added = sorted(set(desired)-set(self._breadth_symbols))
+            self._breadth_symbols = desired
+            if (added or removed) and self._transport and self._status == "connected":
+                self._transport.update_subscriptions(added, removed)
 
     def set_option_consumer(self, consumer):
         with self._lock:
@@ -149,7 +164,7 @@ class KiteStream:
             if not self._valid(generation):
                 return
             try:
-                tokens = list(self._symbols) + list(self._option_symbols)
+                tokens = list(dict.fromkeys([*self._symbols, *self._option_symbols, *self._breadth_symbols]))
                 existing = getattr(ws, "subscribed_tokens", {})
                 obsolete = sorted(set(existing)-set(tokens)) if isinstance(existing, dict) else []
                 if obsolete:
@@ -186,6 +201,7 @@ class KiteStream:
         with self._lock:
             if not self._valid(generation):
                 return
+            symbols = {**self._symbols, **self._breadth_symbols}
             for raw in ticks:
                 if not isinstance(raw, dict):
                     continue
@@ -199,7 +215,7 @@ class KiteStream:
                         except Exception:
                             logger.warning("", extra={"event": "option_tick_rejected"})
                     continue
-                if not isinstance(token, int) or token not in self._symbols or not number(price):
+                if not isinstance(token, int) or token not in symbols or not number(price):
                     continue
                 timestamp = raw.get("exchange_timestamp")
                 if not isinstance(timestamp, datetime):
@@ -213,9 +229,17 @@ class KiteStream:
                     value = raw.get(key)
                     return int(value) if number(value) and value >= 0 and int(value) == value else None
                 average = raw.get("average_traded_price")
-                self.state.update(Tick(token, self._symbols[token], price, self.state.clock(), timestamp, ohlc,
+                tick = Tick(token, symbols[token], price, self.state.clock(), timestamp, ohlc,
                                        quantity("volume_traded"), quantity("oi"),
-                                       average if number(average) and average > 0 else None))
+                                       average if number(average) and average > 0 else None)
+                if token in self._breadth_symbols:
+                    if self._breadth_sink:
+                        try:
+                            self._breadth_sink(tick)
+                        except Exception:
+                            logger.warning("", extra={"event": "breadth_tick_rejected"})
+                else:
+                    self.state.update(tick)
 
     def status(self):
         with self._lock:

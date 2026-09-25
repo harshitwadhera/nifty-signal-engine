@@ -19,6 +19,7 @@ class SignalInput:
     structure: dict = field(default_factory=dict)
     options: dict = field(default_factory=dict)
     volatility: dict = field(default_factory=dict)
+    breadth: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.index_name not in ("NIFTY", "BANKNIFTY"):
@@ -44,7 +45,7 @@ class ScoreResult:
     bearish_points: float
     available_weight: float
     config: "SignalConfig"
-    version: str = "5.2.1"
+    version: str = "5.3.1"
 
 
 @dataclass(frozen=True)
@@ -70,13 +71,23 @@ class SignalConfig:
     vix_low: float = 12
     vix_change_percent: float = 3
     max_iv: float = 5
+    breadth_parts: tuple = (.60, .20, .20)
+    breadth_positive: float = 60
+    breadth_negative: float = 40
+    minimum_score: float = 70
+    minimum_aligned: int = 4
+    minimum_separation: float = 15
+    minimum_option_coverage: float = 95
+    minimum_breadth_coverage: float = 90
+    contradiction_fraction: float = .25
+    critical_max_age_seconds: float = 60
 
     def __post_init__(self):
         for name, value in vars(self).items():
             values = value if isinstance(value, tuple) else (value,)
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not isfinite(v) or v < 0 for v in values):
                 raise ValueError(f"Invalid configuration: {name}")
-        for parts, length in ((self.price_parts, 5), (self.options_parts, 4), (self.futures_parts, 2)):
+        for parts, length in ((self.price_parts, 5), (self.options_parts, 4), (self.futures_parts, 2), (self.breadth_parts, 3)):
             if not isinstance(parts, tuple) or len(parts) != length or abs(sum(parts)-1) > 1e-9:
                 raise ValueError("Category fractions must sum to one")
         if abs(sum((self.price_weight, self.options_weight, self.breadth_weight,
@@ -87,3 +98,22 @@ class SignalConfig:
                 and 0 <= self.direction_margin < 1 and 0 < self.vix_low < self.vix_high
                 and self.max_iv > 0):
             raise ValueError("Invalid threshold ordering")
+        if not (0 <= self.breadth_negative < 50 < self.breadth_positive <= 100
+                and 0 < self.minimum_option_coverage <= 100 and 0 < self.minimum_breadth_coverage <= 100
+                and 0 <= self.minimum_score <= 100 and 0 <= self.minimum_separation <= 100
+                and isinstance(self.minimum_aligned, int) and 1 <= self.minimum_aligned <= 5
+                and 0 < self.contradiction_fraction <= .5 and self.critical_max_age_seconds > 0):
+            raise ValueError("Invalid decision thresholds")
+
+
+@dataclass(frozen=True)
+class DecisionResult:
+    decision: Literal["CALL", "PUT", "NO_TRADE"]
+    confidence: float
+    bullish_score: float
+    bearish_score: float
+    aligned_categories: tuple[str, ...]
+    category_scores: dict[str, CategoryScore]
+    evidence: tuple[str, ...]
+    contradictions: tuple[str, ...]
+    data_quality: dict

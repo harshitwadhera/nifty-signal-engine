@@ -24,6 +24,8 @@ from starlette.concurrency import run_in_threadpool
 from app.analytics.engine import MarketEngine
 from app.kite_client import ReadOnlyClient
 from app.options.service import OptionsService
+from app.breadth.service import BreadthService
+from app.signals.live import LiveSignals
 
 logger = logging.getLogger("market_app")
 
@@ -39,6 +41,7 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     session = session or SessionStore()
     provider = provider or RestMarketDataProvider()
     client_factory = client_factory or (lambda: ReadOnlyClient(KiteConnect(api_key=settings.api_key, timeout=10, debug=False)))
+    managed_stream = stream is None
     if stream is None:
         stream = KiteStream(settings, session, client_factory)
         stream.include_futures = True
@@ -51,14 +54,23 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
                                         feed_status=stream.status)
         options = options or OptionsService(stream, session, client_factory,
                                             os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3")))
+        breadth = BreadthService(stream, session, client_factory) if managed_stream else None
+        app.state.breadth = breadth
+        app.state.signals = LiveSignals(stream, engine, options, breadth) if breadth else None
         engine.start()
         try:
             stream.start()
             options.start()
+            if breadth:
+                breadth.start()
             yield
         finally:
             try:
-                await run_in_threadpool(options.shutdown)
+                try:
+                    if breadth:
+                        await run_in_threadpool(breadth.shutdown)
+                finally:
+                    await run_in_threadpool(options.shutdown)
             finally:
                 try:
                     await run_in_threadpool(stream.shutdown)

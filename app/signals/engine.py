@@ -163,9 +163,30 @@ class SignalEngine:
             t.evidence.append("VIX change: " + ("rising" if change > c.vix_change_percent else "falling" if change < -c.vix_change_percent else "stable"))
         return t.result()
 
+    def breadth(self, data):
+        t, c = Tally(self.config), self.config
+        coverage = number(data.get("coverage_percent"))
+        if data.get("stale") or coverage is None or coverage < c.minimum_breadth_coverage:
+            return t.result()
+        for field, fraction in zip(("percent_positive", "percent_above_5m_ema20", "percent_above_15m_ema20"), c.breadth_parts):
+            value = number(data.get(field))
+            field_coverage = number(data.get(field+"_coverage", coverage))
+            if value is not None and 0 <= value <= 100 and field_coverage is not None and field_coverage >= c.minimum_breadth_coverage:
+                # For A/D, unchanged is neutral, not evidence of declines.
+                negative = number(data.get("percent_negative")) if field == "percent_positive" else 100-value
+                if negative is None or not 0 <= negative <= 100 or (field == "percent_positive" and value+negative > 100.000001):
+                    continue
+                t.add(field, [1 if value >= c.breadth_positive else -1 if negative >= 100-c.breadth_negative else 0], c.breadth_weight*fraction)
+        t.evidence.append("Breadth weighting: " + str(data.get("weighting", "unweighted")))
+        return t.result()
+
+    def decide(self, snapshot: SignalInput):
+        from .decision import decide
+        return decide(snapshot, self.score(snapshot), self.config)
+
     def score(self, snapshot: SignalInput) -> ScoreResult:
         categories = {"price_trend": self.price(snapshot.structure), "options_positioning": self.options(snapshot.options),
-                      "breadth_constituents": CategoryScore("unavailable", 0, 0, 0, ("Breadth scoring reserved",), ()),
+                      "breadth_constituents": self.breadth(snapshot.breadth),
                       "volatility": self.volatility(snapshot.volatility), "futures_structure": self.futures(snapshot.structure)}
         return ScoreResult(snapshot.index_name, snapshot.as_of, categories,
                            round(sum(c.bullish_points for c in categories.values()), 6),

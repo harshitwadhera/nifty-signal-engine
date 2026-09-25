@@ -106,7 +106,7 @@ def test_replay_is_deterministic_and_input_unchanged():
     engine.score(setup(bullish=False))
     assert first == engine.score(sample) == SignalEngine().score(sample)
     assert sample == before
-    assert json.loads(json.dumps(asdict(first), allow_nan=False))['version'] == '5.2.1'
+    assert json.loads(json.dumps(asdict(first), allow_nan=False))['version'] == '5.3.1'
 
 
 def test_ema_budget_is_shared_and_partial_coverage_is_explicit():
