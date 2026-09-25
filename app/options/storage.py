@@ -1,5 +1,16 @@
 import json
 
+from app.analytics.session import local
+from app.options.state import finite_json
+
+
+CHAIN_FIELDS = (
+    "strike", "option_type", "trading_symbol", "instrument_token", "ltp", "bid", "ask",
+    "bid_quantity", "ask_quantity", "spread", "spread_percent", "oi", "oi_change_session",
+    "oi_change_vs_previous_close", "volume", "volume_change", "iv", "delta", "gamma",
+    "theta", "vega", "liquidity", "positioning", "source", "quote_timestamp", "stale",
+)
+
 
 class OptionsStore:
     """Share the existing SQLite connection/lock. Never store credentials or raw ticks."""
@@ -13,6 +24,50 @@ class OptionsStore:
                 index_name TEXT NOT NULL, expiry TEXT NOT NULL, minute TEXT NOT NULL,
                 timestamp TEXT NOT NULL, payload TEXT NOT NULL,
                 PRIMARY KEY(index_name, expiry, minute))''')
+            self.store.db.execute('''CREATE TABLE IF NOT EXISTS option_chain_snapshots (
+                index_name TEXT NOT NULL, expiry TEXT NOT NULL,
+                snapshot_minute TEXT NOT NULL, timestamp TEXT NOT NULL,
+                strike REAL NOT NULL, option_type TEXT NOT NULL,
+                trading_symbol TEXT, instrument_token INTEGER,
+                ltp REAL, bid REAL, ask REAL, bid_quantity INTEGER, ask_quantity INTEGER,
+                spread REAL, spread_percent REAL, oi REAL, oi_change_session REAL,
+                oi_change_vs_previous_close REAL, volume REAL, volume_change REAL,
+                iv REAL, delta REAL, gamma REAL, theta REAL, vega REAL,
+                liquidity TEXT, positioning TEXT, source TEXT, quote_timestamp TEXT,
+                stale INTEGER,
+                PRIMARY KEY(index_name, expiry, snapshot_minute, strike, option_type))''')
+            self.store.db.execute('''CREATE INDEX IF NOT EXISTS option_chain_contract_history
+                ON option_chain_snapshots(index_name, expiry, strike, option_type, snapshot_minute)''')
+            self.store.db.execute('''CREATE INDEX IF NOT EXISTS option_chain_time
+                ON option_chain_snapshots(snapshot_minute, index_name)''')
+
+    def save_chain(self, summary, rows, now):
+        """Atomically store one full nearest-expiry observation, never raw tick events.
+
+        Keep the first observation immutable on retries/restarts. Do not fill missing
+        fields from another minute: NULL and stale flags preserve replay fidelity.
+        """
+        expiry = summary.get("selected_expiry")
+        if not expiry or expiry != summary.get("expiry_selection", {}).get("nearest") or not rows:
+            return
+        now = local(now)
+        key = (summary["index"], expiry, now.replace(second=0, microsecond=0).isoformat())
+        values = []
+        for row in rows:
+            row = finite_json({**row, "liquidity": row.get("liquidity_state"),
+                               "quote_timestamp": row.get("timestamp")})
+            values.append((*key, now.isoformat(), *(row.get(field) for field in CHAIN_FIELDS)))
+        columns = ("index_name", "expiry", "snapshot_minute", "timestamp", *CHAIN_FIELDS)
+        with self.store.lock, self.store.db:
+            # Acquire the SQLite write lock before the existence check, including
+            # writers using another connection after an application restart.
+            self.store.db.execute("BEGIN IMMEDIATE")
+            if self.store.db.execute('''SELECT 1 FROM option_chain_snapshots
+                    WHERE index_name=? AND expiry=? AND snapshot_minute=? LIMIT 1''', key).fetchone():
+                return
+            self.store.db.executemany(
+                f"INSERT INTO option_chain_snapshots ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+                values)
 
     def previous(self, symbol, day):
         with self.store.lock:

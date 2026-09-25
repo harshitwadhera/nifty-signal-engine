@@ -405,3 +405,91 @@ def test_persisted_timestamp_follows_network_fetch(service):
     options.cycle(force=True)
     rows=options.database.db.execute('SELECT timestamp FROM option_snapshots').fetchall()
     assert rows and all(datetime.fromisoformat(row[0])>=clock() for row in rows)
+
+
+def test_full_chain_persistence_nearest_only_and_index_separation(service):
+    options, _, _ = service
+    options.response('NIFTY', date(2026, 9, 30))
+    options.cycle(force=True)
+    db = options.database.db
+    groups = db.execute('''SELECT index_name, expiry, count(*), min(strike), max(strike)
+        FROM option_chain_snapshots GROUP BY index_name, expiry ORDER BY index_name''').fetchall()
+    assert groups == [('BANKNIFTY', '2026-09-28', 42, 80, 120),
+                      ('NIFTY', '2026-09-28', 42, 80, 120)]
+    assert db.execute('SELECT count(*) FROM option_snapshots').fetchone()[0] == 2
+    summary, rows = options.response('NIFTY')
+    expected = next(r for r in rows if r['strike'] == 100 and r['option_type'] == 'CE')
+    from app.options.storage import CHAIN_FIELDS
+    saved = db.execute(f"SELECT {','.join(CHAIN_FIELDS)} FROM option_chain_snapshots "
+                       "WHERE index_name='NIFTY' AND strike=100 AND option_type='CE'").fetchone()
+    mapping = {'liquidity': 'liquidity_state', 'quote_timestamp': 'timestamp'}
+    assert dict(zip(CHAIN_FIELDS, saved)) == {k: expected.get(mapping.get(k, k)) for k in CHAIN_FIELDS}
+
+
+def test_chain_duplicate_minute_survives_store_reopen(service):
+    from app.options.storage import OptionsStore
+    options, _, clock = service
+    options.cycle(force=True)
+    summary, rows = options.response('NIFTY')
+    rows[0]['ltp'] = 999
+    OptionsStore(options.database).save_chain(summary, rows, clock())
+    options._last_persist = None  # Simulate loss of the in-memory minute guard.
+    options.cycle(force=True)
+    db = options.database.db
+    assert db.execute('SELECT count(*) FROM option_chain_snapshots').fetchone()[0] == 84
+    assert db.execute('SELECT count(*) FROM option_chain_snapshots WHERE ltp=999').fetchone()[0] == 0
+    clock.return_value += timedelta(minutes=1)
+    options.cycle(force=True)
+    assert db.execute('SELECT count(*) FROM option_chain_snapshots').fetchone()[0] == 168
+
+
+def test_chain_missing_quotes_and_spot_still_persist(service):
+    options, client, clock = service
+    client.quote.side_effect = lambda symbols: {}
+    clock.return_value += timedelta(seconds=61)  # No fresh spot / ATM.
+    options.cycle(force=True)
+    db = options.database.db
+    assert db.execute('SELECT count(*) FROM option_chain_snapshots').fetchone()[0] == 84
+    assert db.execute('''SELECT count(*) FROM option_chain_snapshots WHERE
+        ltp IS NULL AND bid IS NULL AND ask IS NULL AND oi IS NULL AND iv IS NULL
+        AND quote_timestamp IS NULL AND stale=1''').fetchone()[0] == 84
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), float('-inf')])
+def test_chain_storage_sanitizes_nonfinite_values(service, bad):
+    options, _, clock = service
+    options.cycle(force=True)
+    summary, rows = options.response('NIFTY')
+    fields = ('ltp', 'bid', 'ask', 'bid_quantity', 'ask_quantity', 'spread', 'spread_percent',
+              'oi', 'oi_change_session', 'oi_change_vs_previous_close', 'volume',
+              'volume_change', 'iv', 'delta', 'gamma', 'theta', 'vega')
+    rows[0].update({field: bad for field in fields})
+    clock.return_value += timedelta(minutes=1)
+    options.store.save_chain(summary, rows, clock())
+    saved = options.database.db.execute(f"SELECT {','.join(fields)} FROM option_chain_snapshots "
+        "WHERE index_name='NIFTY' AND snapshot_minute=? AND trading_symbol=?",
+        (clock().isoformat(), rows[0]['trading_symbol'])).fetchone()
+    assert saved == (None,) * len(fields)
+
+
+def test_chain_store_rejects_non_nearest_expiry(service):
+    options, _, clock = service
+    options.cycle(force=True)
+    summary, rows = options.response('NIFTY', date(2026, 9, 30))
+    options.store.save_chain(summary, rows, clock())
+    assert options.database.db.execute("SELECT count(*) FROM option_chain_snapshots WHERE expiry='2026-09-30'").fetchone()[0] == 0
+
+
+def test_chain_minute_captures_fresh_stream_overlay_without_tick_writes(service):
+    options, _, clock = service
+    options.cycle(force=True)
+    clock.return_value += timedelta(minutes=1)
+    contract = options.discovery.get_option_contract('NIFTY', date(2026, 9, 28), 100, 'CE')
+    quote = normalize_quote(raw(clock, oi=5432), clock(), 'stream')
+    options.process_tick(options._generation, contract.instrument_token, quote, clock())
+    db = options.database.db
+    assert db.execute('SELECT count(*) FROM option_chain_snapshots').fetchone()[0] == 84
+    options.cycle()  # Existing full chain plus the fresh live observation.
+    saved = db.execute("SELECT oi, source FROM option_chain_snapshots WHERE index_name='NIFTY' "
+                       "AND strike=100 AND option_type='CE' AND snapshot_minute=?", (clock().isoformat(),)).fetchone()
+    assert saved == (5432, 'stream')

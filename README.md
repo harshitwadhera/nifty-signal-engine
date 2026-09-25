@@ -126,7 +126,7 @@ Tests mock all Zerodha calls and isolate SQLite under temporary directories. The
 
 For Phase 3 live acceptance, restart the single-worker application using the same startup command and log in manually. Check `/api/market/live` lists five instruments, `/api/market/structure` progresses through history recovery, and candles/EMA values warm up. Verify the futures contract/expiry, opening range and previous levels against Kite. History entitlement or temporary API errors may leave metrics unavailable; authentication and live streaming remain independently visible. The previously running Phase 2 server is not automatically restarted by development changes.
 
-Phase 4 extends this architecture below. No Phase 5, trade execution or CALL/PUT recommendation is implemented.
+Phase 4 extends this architecture below. Phase 5.1 adds persistence only; no trade execution or CALL/PUT recommendation is implemented.
 
 References: [authentication](https://kite.trade/docs/connect/v3/user/), [WebSocket packet fields](https://kite.trade/docs/connect/v3/websocket/), [historical data](https://kite.trade/docs/connect/v3/historical/), [instrument metadata](https://kite.trade/docs/connect/v3/market-quotes/), [official Python SDK](https://github.com/zerodha/pykiteconnect).
 
@@ -188,6 +188,16 @@ Every response exposes `last_stream_tick_at`, `last_full_chain_refresh_at`, `sta
 8. Verify missing quotes/stale data suppress full-chain aggregates; market-closed status is not a trading recommendation.
 9. Confirm `option_snapshots` grows at minute cadence and `option_previous_oi` caches historical values. No credentials or raw ticks should appear in the database.
 
-Phase 4 real-account acceptance has not been run by these mock tests. The existing server is not automatically restarted. No Phase 5, CALL/PUT recommendation, order placement or automatic trading is implemented.
+Phase 4 real-account acceptance has not been run by these mock tests. The existing server is not automatically restarted. No signal generation, CALL/PUT recommendation, order placement or automatic trading is implemented.
+
+### Phase 5.1 full-chain history
+
+`option_chain_snapshots` now stores every discovered CE/PE contract in the nearest listed expiry for NIFTY and BANKNIFTY once per minute, alongside the unchanged `option_snapshots` summary/ATM ±5 records. Other expiries requested through the dashboard are not archived. Schema and indexes are created automatically on startup in the existing ignored SQLite database; no configuration change is needed.
+
+The first persistence pass in each IST minute captures the full available chain after REST refresh, including fresh stream overlays, even without a fresh spot/ATM. This is a sampled observation, not a minute-close bar. Missing fields stay NULL; nonfinite numbers are converted to NULL. Each row contains contract identity, prices/top quotes, quantities, spreads, OI and volume changes, locally calculated IV/Greeks, liquidity/positioning, source, quote timestamp and stale flag. `timestamp` is capture time; `quote_timestamp` is the supplied exchange time and may be NULL. Mixed quote times and missing/stale observations remain explicit rather than being filled from older snapshots.
+
+An atomic transaction and unique `(index_name, expiry, snapshot_minute, strike, option_type)` key protect retries/restarts. The first saved observation is immutable for that minute. Indexes support whole-chain retrieval, contract history and cross-index time ranges. No raw ticks are persisted and no signals are generated. Full-chain history increases database size; this phase does not automatically delete historical records.
+
+Test with `py -m pytest -q --basetemp=.pytest_tmp` (or `.\.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_tmp` when the Windows launcher has no registered Python).
 
 Additional references: [Kite request limits](https://kite.trade/docs/connect/v3/exceptions/), [quote batch fields](https://kite.trade/docs/connect/v3/market-quotes/), [CME options analytics](https://www.cmegroup.com/market-data/greeks-and-implied-volatility-data.html).

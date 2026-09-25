@@ -150,6 +150,10 @@ class OptionsService:
             if minute != self._last_persist:
                 for index in INDICES:
                     summary, rows = self.response(index, window=5)
+                    # response returns all discovered contracts, including REST
+                    # quotes outside the live window and fresh streaming overlays.
+                    # Persist independently of ATM/spot availability.
+                    self.store.save_chain(summary, rows, now)
                     center = summary["atm"]
                     strikes = sorted({r["strike"] for r in rows})
                     if center is not None:
