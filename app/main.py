@@ -56,7 +56,8 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
                                             os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3")))
         breadth = BreadthService(stream, session, client_factory) if managed_stream else None
         app.state.breadth = breadth
-        app.state.signals = LiveSignals(stream, engine, options, breadth) if breadth else None
+        app.state.signals = LiveSignals(stream, engine, options, breadth,
+            journal_path=os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3"))) if breadth else None
         engine.start()
         try:
             stream.start()
@@ -70,7 +71,11 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
                     if breadth:
                         await run_in_threadpool(breadth.shutdown)
                 finally:
-                    await run_in_threadpool(options.shutdown)
+                    try:
+                        if app.state.signals:
+                            await run_in_threadpool(app.state.signals.close)
+                    finally:
+                        await run_in_threadpool(options.shutdown)
             finally:
                 try:
                     await run_in_threadpool(stream.shutdown)

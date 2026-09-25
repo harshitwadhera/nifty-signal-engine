@@ -265,3 +265,65 @@ The 15-point breadth category allocates 60% to positive/negative participation a
 Anything else returns **NO_TRADE**, with blocking reasons and confidence zero. Confidence for a passing decision is the winning score out of 100, **not a calibrated success probability**. Missing scores are not redistributed. Thresholds remain in `SignalConfig`; results include the configuration and scoring version `5.3.1` for replay. The Phase 5.2 `score()` interface remains available.
 
 Production wiring starts breadth after authentication through the existing app lifecycle. Internal callers can use `app.state.breadth.snapshot("NIFTY")` and `app.state.signals.decision("NIFTY")` during lifespan; equivalent BANKNIFTY calls are supported. No new API or dashboard is added, and there is no signal lifecycle, entry, stop, target or execution. Restart is required to activate this code; mock tests do not constitute live market acceptance.
+
+### Phase 5.4 structural plans and signal lifecycle
+
+This phase extends the internal Phase 5.3 decisions with `SignalPlanner`, `ExecutionConfig` and `SignalLifecycle`. There are still **no order APIs or broker execution**. Entry, invalidation, T1/T2 and risk/reward are expressed in the named underlying's price, never in option premium. Confirmation and target states record observed conditions; they are not orders, fills or realized profit.
+
+The planner first requires an existing qualifying CALL/PUT decision. It chooses the closest known opening-range, previous-day or confirmed swing barrier for an index breakout/breakdown; an already-broken barrier requires a retest. An OI wall is eligible only when present in the full-chain top-OI rankings with positive OI, and still needs price confirmation. Recent swings use a completed five-bar pivot with two completed bars on each side; partial/gapped/future bars cannot establish a pivot. If no spot barrier exists, supplied futures structure can support a VWAP reclaim/loss, entirely in that futures contract's price space.
+
+Invalidation is the nearest structural support below a CALL trigger or resistance above a PUT trigger. T1/T2 are the nearest known structural levels ahead in the direction, including day extremes. The planner does not skip a nearer obstacle to improve R:R or invent a target. T2 may be NULL; missing invalidation/T1, already invalidated/exhausted structure, or T1 R:R below **1.5** returns NO_TRADE without an actionable plan. Levels are frozen when the candidate is created.
+
+Contract selection receives the **complete, unpaginated metadata/quote chain** for the nearest selected expiry after direction and structure qualify. It tries ATM first, then only the adjacent lower strike CE for CALL or adjacent higher strike PE for PUT. It never ranks by cheap premium or falls back to far OTM. A contract needs unique identity, fresh receipt/exchange timestamps, valid top quotes and quantities, finite positive LTP, acceptable midpoint-relative spread, adequate OI/volume and LIQUID/MODERATE status. Defaults: quote age at most 30 seconds, spread at most 1%, OI at least 1,000 and volume at least 100. Missing fields fail selection.
+
+Lifecycle behavior:
+
+| State | Meaning |
+| --- | --- |
+| CANDIDATE | Qualified structural plan and selected liquid option; waiting for confirmation |
+| CONFIRMED | A new complete nonpartial 5m candle crossed the trigger, or touched and closed back beyond it on a retest; qualification/liquidity/R:R rechecked |
+| INVALIDATED | Structural invalidation touched before confirmation, or the selected contract/R:R failed confirmation checks |
+| TARGET1_HIT | Underlying T1 observed after confirmation; continues to T2, stop or session expiry |
+| TARGET2_HIT | Underlying T2 observed; terminal |
+| STOPPED | Structural invalidation touched after confirmation; terminal |
+| EXPIRED | Candidate lifetime/cutoff or session end reached; terminal |
+
+Confirmation candles must start after candidate creation, belong to the trigger instrument, and finish by the supplied observation time. A breakout must open on the unbroken side and close beyond the level; a retest opens on the broken side, touches the level, then closes back beyond it. Timestamps are explicit and aware, so replay does not consult a wall clock. Partial/stale/wrong-instrument candles cannot confirm. Confirmation rechecks the original option's ATM/ITM eligibility and calculates R:R using the worse of the candle close/current underlying observation, preventing a gap or late observation from retaining an obsolete trigger-price R:R. No target is credited from the confirmation candle itself. A later bar touching both invalidation and target is conservatively stop-first because ordering is unknown. Stale data cannot confirm or hit levels; expiry still applies. Out-of-order observations and already-consumed candles cannot mutate state.
+
+Candidates last **900 seconds**, capped at **15:00 IST**. Creation and confirmation at/after the cutoff are rejected; existing confirmed signals can be observed until 15:30 IST, when they expire. Weekends/pre-open creation is rejected. These clock checks are not an exchange-holiday calendar; the existing freshness/coverage gates remain required. A signal with no T2 stays at TARGET1_HIT until stop or session expiry.
+
+Only one active signal per index is allowed. A deterministic ID deduplicates the same index/session/direction/instrument/structural source/level even if quote times or targets change. The `signal_lifecycle` SQLite table stores plans and transition history in the existing ignored market database, preserving duplicate suppression across restarts. Terminal setups cannot be recreated that session. Use the existing **single application worker**; the lifecycle lock serializes callers in that process. Replay should use an isolated journal and the same scoring/execution configuration. No raw ticks, credentials or broker responses are stored in this journal.
+
+Internal usage:
+
+```python
+from app.signals import SignalPlanner, SignalLifecycle
+
+planner = SignalPlanner()  # Pure supplied-snapshot planning, default configuration
+result = planner.build(snapshot, complete_chain_rows)
+
+lifecycle = SignalLifecycle(planner)  # In-memory SQLite journal for replay by default
+submission = lifecycle.submit(snapshot, complete_chain_rows)
+if submission.record:
+    record = lifecycle.advance(
+        submission.record.signal_id, next_snapshot, next_chain_rows,
+        bar=completed_5m_bar,  # Existing Phase 3 bar schema, including symbol/interval
+    )
+lifecycle.close()
+```
+
+Within the running app, `app.state.signals.evaluate("NIFTY")` (or `"BANKNIFTY"`) collects existing structure, full options rows and completed candles, then creates or advances the signal. `submission.created` distinguishes a new candidate from an existing record; duplicates return NO_TRADE with the existing record and reason. Evaluation is explicit and synchronous, not a new background loop, API or dashboard feature. The old `decision()` method remains read-only scoring. Lifecycles are expired on the next evaluation/advance; no timers or orders run independently.
+
+Optional `.env` settings, read at startup (restart required):
+
+```dotenv
+SIGNAL_MIN_T1_RR=1.5
+SIGNAL_CANDIDATE_LIFETIME_SECONDS=900
+SIGNAL_NEW_ENTRY_CUTOFF=15:00
+SIGNAL_OPTION_QUOTE_MAX_AGE_SECONDS=30
+SIGNAL_OPTION_MAX_SPREAD_PERCENT=1
+SIGNAL_OPTION_MIN_OI=1000
+SIGNAL_OPTION_MIN_VOLUME=100
+```
+
+Mock tests cover structural triggers, confirmation, invalidation, R:R, both option directions, illiquidity, targets/stops, duplicate persistence, expiry and cutoff. Live market acceptance remains pending; the app is not automatically restarted.
