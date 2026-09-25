@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Manual trade replay fixture</title>
+<link rel="stylesheet" href="/static/style.css"><script src="/static/trades.js" defer></script><script src="/replay.js" defer></script></head>
+<body><main><h1>DEVELOPMENT FIXTURE — NO LIVE DATA</h1>
+<p>First use I TOOK THIS TRADE and CONFIRM TRADE. Then advance one step at a time, allowing the panel to refresh.</p>
+<p>Sequence: 24840 fresh → ACTIVE; 24790 stale → PAUSED, no exit; 24790 fresh → STOP HIT once.</p>
+<p>The displayed contract, lot size and confirmed signal are synthetic. Restart this command to reset the temporary journal.</p>
+<button id="next-replay" type="button">NEXT OBSERVATION</button><p id="replay-step"></p>
+<div class="structure-grid"><article><h2>NIFTY</h2><div id="nifty-trade"></div></article><article><h2>BANKNIFTY</h2><div id="banknifty-trade"></div></article></div>
+</main></body></html>

@@ -26,6 +26,8 @@ from app.kite_client import ReadOnlyClient
 from app.options.service import OptionsService
 from app.breadth.service import BreadthService
 from app.signals.live import LiveSignals
+from app.trades.service import TradeService
+from app.trades.models import Confirmation, Closure, Acknowledgement
 
 logger = logging.getLogger("market_app")
 
@@ -35,7 +37,7 @@ class AppError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def create_app(settings=None, client_factory=None, session=None, provider=None, stream=None, engine=None, options=None, signals=None):
+def create_app(settings=None, client_factory=None, session=None, provider=None, stream=None, engine=None, options=None, signals=None, trades=None):
     configure_logging()
     settings = settings or Settings.load()
     session = session or SessionStore()
@@ -58,6 +60,8 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
         app.state.breadth = breadth
         app.state.signals = signals or (LiveSignals(stream, engine, options, breadth,
             journal_path=os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3"))) if breadth else None)
+        app.state.trades = trades or (TradeService(stream, app.state.signals, options,
+            path=os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3"))) if managed_stream and app.state.signals else None)
         engine.start()
         try:
             stream.start()
@@ -66,12 +70,18 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
                 breadth.start()
             if app.state.signals:
                 app.state.signals.start()
+            if app.state.trades:
+                app.state.trades.start()
             yield
         finally:
             try:
                 try:
-                    if app.state.signals:
-                        await run_in_threadpool(app.state.signals.close)
+                    try:
+                        if app.state.trades:
+                            await run_in_threadpool(app.state.trades.close)
+                    finally:
+                        if app.state.signals:
+                            await run_in_threadpool(app.state.signals.close)
                 finally:
                     try:
                         if breadth:
@@ -92,6 +102,13 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     @app.middleware("http")
     async def safe_responses(request: Request, call_next):
         try:
+            if request.method == 'POST' and request.url.path.startswith('/api/trades/'):
+                # Local journal mutations require JSON and same-origin browser requests.
+                origin = request.headers.get('origin')
+                if (request.headers.get('sec-fetch-site') == 'cross-site'
+                        or (origin and origin != str(request.base_url).rstrip('/'))
+                        or request.headers.get('content-type', '').split(';')[0] != 'application/json'):
+                    return JSONResponse({'error': {'message': 'Same-origin JSON request required.'}}, status_code=403)
             response = await call_next(request)
         except Exception:
             logger.error("", extra={"event": "unexpected_error", "status": 500})
@@ -116,6 +133,44 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
         if service is None:
             raise AppError(503, 'signals_unavailable', 'Signal observations are not available.')
         return service
+
+    def trade_service():
+        if app.state.trades is None:
+            raise AppError(503, 'trades_unavailable', 'Manual trade journal unavailable.')
+        return app.state.trades
+
+    def trade_action(action):
+        try:
+            return action()
+        except KeyError:
+            raise AppError(404, 'not_found', 'Signal, trade or event not found.') from None
+        except ValueError as exc:
+            raise AppError(409, 'trade_conflict', str(exc)) from None
+
+    @app.get('/api/trades/active')
+    def active_trades():
+        return trade_service().active()
+
+    @app.get('/api/trades/history')
+    def trade_history(limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0, le=100000),
+                      index: Literal['nifty', 'banknifty'] | None = None):
+        return trade_service().journal.listing(limit=limit, offset=offset, index=index.upper() if index else None)
+
+    @app.get('/api/trades/setup/{index}')
+    def trade_setup(index: Literal['nifty', 'banknifty']):
+        return trade_service().setup(index.upper())
+
+    @app.post('/api/trades/{signal_id}/confirm', status_code=201)
+    def confirm_trade(signal_id: str, body: Confirmation):
+        return trade_action(lambda: trade_service().confirm(signal_id, body))
+
+    @app.post('/api/trades/{trade_id}/acknowledge')
+    def acknowledge_trade(trade_id: str, body: Acknowledgement):
+        return trade_action(lambda: trade_service().acknowledge(trade_id, body.event_id))
+
+    @app.post('/api/trades/{trade_id}/close')
+    def close_trade(trade_id: str, body: Closure):
+        return trade_action(lambda: trade_service().close_trade(trade_id, body))
 
     @app.get('/api/signals/current')
     def current_signals():

@@ -9,6 +9,7 @@
   <script src="/static/structure.js" defer></script>
   <script src="/static/options.js" defer></script>
   <script src="/static/signals.js" defer></script>
+  <script src="/static/trades.js" defer></script>
 </head>
 <body><main>
   <p class="eyebrow">PHASE 5 · READ-ONLY MARKET & SIGNAL ANALYSIS</p>
@@ -27,8 +28,8 @@
   <h2 class="section-title">Signal observations</h2>
   <p class="note">NO TRADE is a normal result. Candidates need confirmation. These are observed underlying plans, not orders or fills; confidence is an evidence score, not a success probability.</p>
   <div class="structure-grid signal-grid">
-    <article><h2>NIFTY signal</h2><div id="nifty-signal" aria-live="polite">Waiting for observations…</div></article>
-    <article><h2>BANK NIFTY signal</h2><div id="banknifty-signal" aria-live="polite">Waiting for observations…</div></article>
+    <article><h2>NIFTY signal</h2><div id="nifty-trade"></div><div id="nifty-signal" aria-live="polite">Waiting for observations…</div></article>
+    <article><h2>BANK NIFTY signal</h2><div id="banknifty-trade"></div><div id="banknifty-signal" aria-live="polite">Waiting for observations…</div></article>
   </div>
   <h2 class="section-title">Market Structure</h2>
   <p id="structure-status" role="status">Loading candle history…</p>
