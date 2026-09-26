@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+kiteconnect==5.2.2
+python-dotenv>=1.0,<2
+tzdata>=2025.2

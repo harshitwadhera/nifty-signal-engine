@@ -1,8 +1,7 @@
 import logging
-import os
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import date
 from threading import Lock
 from urllib.parse import urlencode, urlparse
@@ -15,7 +14,8 @@ from kiteconnect import KiteConnect
 from kiteconnect.exceptions import TokenException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.config import ROOT, Settings
+from app.config import ROOT, Settings, prepare_database_path
+from app.health import readiness
 from app.logging_config import configure_logging
 from app.market import RestMarketDataProvider
 from app.session import SessionStore
@@ -51,19 +51,27 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     @asynccontextmanager
     async def lifespan(app):
         nonlocal engine, options
-        engine = engine or MarketEngine(stream.state, session, client_factory,
-                                        os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3")),
-                                        feed_status=stream.status)
-        options = options or OptionsService(stream, session, client_factory,
-                                            os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3")))
-        breadth = BreadthService(stream, session, client_factory) if managed_stream else None
-        app.state.breadth = breadth
-        app.state.signals = signals or (LiveSignals(stream, engine, options, breadth,
-            journal_path=os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3"))) if breadth else None)
-        app.state.trades = trades or (TradeService(stream, app.state.signals, options,
-            path=os.getenv("MARKET_DB_PATH", str(ROOT / "data" / "market.sqlite3"))) if managed_stream and app.state.signals else None)
-        engine.start()
-        try:
+        db_path = prepare_database_path()
+        app.state.database_path = db_path
+        # Preserve shutdown order, including when a later constructor/start fails.
+        async with AsyncExitStack() as cleanup:
+            engine = engine or MarketEngine(stream.state, session, client_factory, db_path, feed_status=stream.status)
+            cleanup.push_async_callback(run_in_threadpool, engine.shutdown)
+            cleanup.push_async_callback(run_in_threadpool, stream.shutdown)
+            options = options or OptionsService(stream, session, client_factory, db_path)
+            cleanup.push_async_callback(run_in_threadpool, options.shutdown)
+            breadth = BreadthService(stream, session, client_factory) if managed_stream else None
+            app.state.breadth = breadth
+            if breadth:
+                cleanup.push_async_callback(run_in_threadpool, breadth.shutdown)
+            app.state.signals = signals or (LiveSignals(stream, engine, options, breadth, journal_path=db_path) if breadth else None)
+            if app.state.signals:
+                cleanup.push_async_callback(run_in_threadpool, app.state.signals.close)
+            app.state.trades = trades or (TradeService(stream, app.state.signals, options, path=db_path)
+                if managed_stream and app.state.signals else None)
+            if app.state.trades:
+                cleanup.push_async_callback(run_in_threadpool, app.state.trades.close)
+            engine.start()
             stream.start()
             options.start()
             if breadth:
@@ -73,29 +81,12 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
             if app.state.trades:
                 app.state.trades.start()
             yield
-        finally:
-            try:
-                try:
-                    try:
-                        if app.state.trades:
-                            await run_in_threadpool(app.state.trades.close)
-                    finally:
-                        if app.state.signals:
-                            await run_in_threadpool(app.state.signals.close)
-                finally:
-                    try:
-                        if breadth:
-                            await run_in_threadpool(breadth.shutdown)
-                    finally:
-                        await run_in_threadpool(options.shutdown)
-            finally:
-                try:
-                    await run_in_threadpool(stream.shutdown)
-                finally:
-                    await run_in_threadpool(engine.shutdown)
 
     app = FastAPI(title="Read-only index dashboard", docs_url=None, redoc_url=None, lifespan=lifespan)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))
+    app.state.database_path = None
+    app.state.signals = None
+    app.state.trades = None
     pending = {}
     pending_lock = Lock()
 
@@ -206,6 +197,15 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.get('/health/live')
+    def liveness():
+        return {'status': 'ok'}
+
+    @app.get('/health/ready')
+    def ready():
+        result = readiness(settings, session, stream, app.state.signals, app.state.trades, app.state.database_path)
+        return JSONResponse(result, status_code=200 if result['status'] == 'ready' else 503)
 
     @app.get("/api/connection")
     def connection():
