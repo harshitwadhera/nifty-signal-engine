@@ -65,6 +65,18 @@ class TradeService:
                 reason = 'Contract lot size unavailable.'
             elif instant(option['expiry']+'T15:30:00+05:30') <= instant(now):
                 reason = 'Option contract has expired.'
+            if coordinate_ok and current is not None:
+                sign = 1 if plan.get('direction') == 'CALL' else -1
+                stop = price((plan.get('invalidation') or {}).get('level'))
+                target = price((plan.get('target1') or {}).get('level'))
+                confirmation = record.get('confirmation_price')
+                if confirmation is None:
+                    confirmation = record.get('outcome', {}).get('entry_underlying')
+                coordinates = [current] + ([confirmation] if confirmation is not None else [])
+                if (stop is None or target is None or any(price(value) is None or
+                        not (sign*(value-stop) > 0 and sign*(target-value) > 0) for value in coordinates)):
+                    reason = 'Underlying has already reached the structural stop or first target; this setup is no longer actionable.'
+                    state = 'NO_TRADE'
         return {'index': index, 'setup_state': state, 'can_confirm': state == 'READY' and reason is None,
                 'reason': reason, 'signal': view, 'lot_size': lot if valid_lot else None,
                 'option_ltp': self.quote(contract), 'underlying_current': current,

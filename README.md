@@ -384,3 +384,15 @@ No order placement, automatic execution or broker position management is present
 8. Verify no new candidates/confirmations at or after 15:00 IST, pending candidate expiry, and session expiry at 15:30. Confirm there are no broker orders and no secrets in browser responses, logs or tracked files.
 
 Automated tests use mocks and do not replace this real-account live acceptance. The development workflow does not restart the running app automatically.
+
+#### Manual trade alarms (Phase 5.6)
+
+Only explicitly confirmed manual trades generate exit/target alerts. A signal's CONFIRMED state does not record a user entry. Trade Setup permits confirmation only while the fresh underlying and available signal confirmation price lie strictly between the structural stop and T1; boundary touches return NO TRADE with an explanation.
+
+For a persisted, unacknowledged STOP_HIT event, the browser repeats the stop sound every 1.5 seconds after audio has been permitted by user interaction. The red EXIT TRADE banner remains visible. ACKNOWLEDGE immediately silences the timer and active tone, saves acknowledgement, and leaves the trade open. Confirming I EXITED THE TRADE silences it and journals USER_CLOSED with the supplied exit premium. Failed mutation requests display an error; retry to ensure the acknowledgement or closure is saved.
+
+Each tab maintains one alarm controller per trade. Refresh polling does not add duplicate timers, and saved acknowledgements suppress restart. Browser page loading never bypasses audio permission: use TEST ALARM after reopening the page. This test plays the pattern for 4.5 seconds and automatically stops; an actual active stop alarm instead continues until acknowledged or the exit is confirmed. T1 and T2 each play one short sound only.
+
+Stale/disconnected observations cannot create stop or target events or start a new stop alarm. A genuine stop alarm already triggered by fresh data continues through subsequent data gaps until acknowledged or closed. The panel displays MONITORING PAUSED during gaps; this does not undo a recorded stop event. Audio depends on an open browser tab and browser sound permissions. No broker orders or automatic position closing occur.
+
+Run frontend coverage with `node --test tests/dashboard.test.cjs tests/structure.test.cjs tests/options.test.cjs tests/signals.test.cjs tests/trades.test.cjs`. The isolated local UI replay remains available with `python -m scripts.replay_trades`, then open `http://127.0.0.1:8001/replay`; its temporary journal and synthetic data are separate from the production application.

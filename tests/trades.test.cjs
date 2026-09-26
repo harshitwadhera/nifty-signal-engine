@@ -19,20 +19,37 @@ function setup(state='READY'){return {setup_state:state,can_confirm:state==='REA
 function trade(){return {trade_id:'trade',index_name:'NIFTY',option_symbol:'NIFTYTEST',quantity:65,
   actual_entry_premium:102,underlying_stop:24800,target1:25000,target2:25100,status:'ACTIVE',monitoring_status:'LIVE',events:[]};}
 async function harness(initialSetup=setup(),initialTrade=null,storage=new Map()) {
-  const elements={},body=node('body'),calls=[],intervals=[]; let sounds=0;
+  const elements={},body=node('body'),calls=[],timers=new Map(); let sounds=0,cancelled=0,clock=0,nextTimer=1;
   const data={setup:initialSetup,trade:initialTrade,fail:false};
   class Audio {constructor(){this.state='running';this.currentTime=0;this.destination={};}async resume(){}
-    createOscillator(){return {connect(){},frequency:{},start(){sounds++;},stop(){}};}
-    createGain(){return {connect(){},gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}}};}}
+    createOscillator(){return {connect(){},disconnect(){},frequency:{},start(){sounds++;},stop(at){if(at===undefined)cancelled++;}};}
+    createGain(){return {connect(){},disconnect(){},gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}}};}}
   const context=vm.createContext({document:{body,getElementById:id=>elements[id] ||= node(),createElement:node},
     window:{AudioContext:Audio},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},
-    AbortSignal,Date,setInterval:fn=>intervals.push(fn),fetch:async(url,options={})=>{
+    AbortSignal,Date,
+    setInterval:(fn,ms)=>{const id=nextTimer++;timers.set(id,{fn,ms,at:clock+ms,repeat:true});return id;},
+    clearInterval:id=>timers.delete(id),
+    setTimeout:(fn,ms)=>{const id=nextTimer++;timers.set(id,{fn,ms,at:clock+ms,repeat:false});return id;},
+    clearTimeout:id=>timers.delete(id),fetch:async(url,options={})=>{
       calls.push({url,options}); if(data.fail)throw Error('offline');
+      if(data.postWait && options.method==='POST')await data.postWait;
+      if(url.endsWith('/acknowledge') && data.trade) {
+        const event=data.trade.events.find(e=>e.event_id===JSON.parse(options.body).event_id);
+        if(event)event.acknowledged_at='persisted';
+      }
+      if(url.endsWith('/close'))data.trade=null;
       const payload=url.endsWith('/active')?{items:data.trade?[data.trade]:[]}:url.includes('/setup/')?data.setup:{};
       return {ok:true,json:async()=>payload};
     }});
   vm.runInContext(fs.readFileSync('app/static/trades.js','utf8'),context); await flush();
-  return {data,elements,body,calls,sounds:()=>sounds,refresh:async()=>{await intervals[0]();await flush();},storage};
+  return {data,elements,body,calls,sounds:()=>sounds,cancelled:()=>cancelled,
+    loops:()=>[...timers.values()].filter(t=>t.ms===1500).length,
+    advance(ms){const end=clock+ms;while(true){
+      const next=[...timers.entries()].filter(([id,t])=>t.ms!==2000 && t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];
+      if(!next)break;const [id,t]=next;clock=t.at;
+      if(t.repeat)t.at+=t.ms;else timers.delete(id);t.fn();
+    }clock=end;},
+    refresh:async()=>{await [...timers.values()].find(t=>t.ms===2000).fn();await flush();},storage};
 }
 test('NO TRADE and WAIT FOR TRIGGER have no entry button',async()=>{
   for(const state of ['NO_TRADE','WAITING']){
@@ -66,17 +83,78 @@ test('active box, stale warning and close dialog persist optional exit premium',
   await form.listeners.submit({preventDefault(){}});
   assert.equal(JSON.parse(h.calls.find(c=>c.url.endsWith('/close')).options.body).actual_exit_premium,87.5);
 });
-test('stop and target events sound once after interaction; page load/reload never autoplay',async()=>{
+function stopEvent(ack=null){return {event_id:'STOP',kind:'STOP_HIT',at:'2026-09-25T10:10:00+05:30',underlying:24790,acknowledged_at:ack};}
+async function armedTrade(){
   const t=trade(),h=await harness(setup(),t);
-  await button(h.elements['nifty-trade'],'TEST ALARM').listeners.click();assert.equal(h.sounds(),1);
-  for(const [i,kind]of ['T1_HIT','T2_HIT','STOP_HIT'].entries()){
-    t.events.push({event_id:kind,kind,at:'2026-09-25T10:10:00+05:30',underlying:24790});
-    await h.refresh();assert.equal(h.sounds(),i+2);await h.refresh();assert.equal(h.sounds(),i+2);
+  await button(h.elements['nifty-trade'],'TEST ALARM').listeners.click();
+  h.advance(4500);assert.equal(h.loops(),0);return {t,h};
+}
+test('STOP_HIT repeats every 1.5 seconds without duplicate loops on refresh',async()=>{
+  const {t,h}=await armedTrade();const before=h.sounds();
+  t.status='STOP_HIT';t.events=[stopEvent()];await h.refresh();
+  assert.equal(h.sounds(),before+1);assert.equal(h.loops(),1);
+  await h.refresh();await h.refresh();assert.equal(h.loops(),1);assert.equal(h.sounds(),before+1);
+  h.advance(3000);assert.equal(h.sounds(),before+3);
+  assert.ok(find(h.elements['nifty-trade'],n=>n.className==='trade-stop'));
+});
+test('ACKNOWLEDGE immediately cancels timer and audio, persists, and leaves banner/trade open',async()=>{
+  const {t,h}=await armedTrade();t.events=[stopEvent()];await h.refresh();
+  let release;h.data.postWait=new Promise(resolve=>release=resolve);
+  const pending=button(h.elements['nifty-trade'],'ACKNOWLEDGE').listeners.click();
+  assert.equal(h.loops(),0);assert.ok(h.cancelled()>0);
+  const before=h.sounds();await h.refresh();h.advance(3000);assert.equal(h.sounds(),before);
+  release();await pending;h.data.postWait=null;
+  assert.equal(t.events[0].acknowledged_at,'persisted');assert.equal(h.data.trade,t);
+  assert.match(text(h.elements['nifty-trade']),/Acknowledged .* trade remains open/);
+  assert.ok(find(h.elements['nifty-trade'],n=>n.className==='trade-stop'));
+  await h.refresh();assert.equal(h.loops(),0);
+});
+test('confirmed user exit stops immediately and removes trade; opening/cancelling dialog does not silence',async()=>{
+  const {t,h}=await armedTrade();t.events=[stopEvent()];await h.refresh();
+  button(h.elements['nifty-trade'],'I EXITED THE TRADE').listeners.click();assert.equal(h.loops(),1);
+  const form=find(h.body,n=>n.tag==='form');
+  let release;h.data.postWait=new Promise(resolve=>release=resolve);
+  const pending=form.listeners.submit({preventDefault(){}});assert.equal(h.loops(),0);
+  release();await pending;h.data.postWait=null;
+  assert.equal(h.data.trade,null);await h.refresh();assert.equal(h.loops(),0);
+});
+test('acknowledged STOP never restarts after reload; unacknowledged STOP needs user audio permission',async()=>{
+  const t=trade();t.events=[stopEvent('persisted')];
+  const h=await harness(setup(),t);assert.equal(h.sounds(),0);
+  await button(h.elements['nifty-trade'],'TEST ALARM').listeners.click();h.advance(4500);
+  const count=h.sounds();await h.refresh();h.advance(3000);assert.equal(h.sounds(),count);assert.equal(h.loops(),0);
+  t.events=[stopEvent()];const reboot=await harness(setup(),t);
+  assert.equal(reboot.loops(),0);assert.equal(reboot.sounds(),0);
+  await button(reboot.elements['nifty-trade'],'TEST ALARM').listeners.click();assert.equal(reboot.loops(),1);
+  reboot.advance(6000);assert.equal(reboot.loops(),1);
+});
+for(const kind of ['T1_HIT','T2_HIT'])test(kind+' plays one short sound, never a repeating loop',async()=>{
+  const {t,h}=await armedTrade();const before=h.sounds();
+  t.events=[{event_id:kind,kind,at:'now',underlying:25101}];await h.refresh();
+  assert.equal(h.sounds(),before+1);assert.equal(h.loops(),0);
+  await h.refresh();h.advance(5000);assert.equal(h.sounds(),before+1);
+});
+test('stale crossing never starts stop alarm; stale new event is deferred but existing genuine alarm stays latched',async()=>{
+  const {t,h}=await armedTrade();const before=h.sounds();
+  t.current_underlying=24790;t.monitoring_status='PAUSED';await h.refresh();
+  assert.equal(h.loops(),0);assert.equal(h.sounds(),before);assert.match(text(h.elements['nifty-trade']),/MONITORING PAUSED/);
+  t.events=[stopEvent()];await h.refresh();assert.equal(h.loops(),0);
+  t.monitoring_status='LIVE';await h.refresh();assert.equal(h.loops(),1);
+  t.monitoring_status='PAUSED';await h.refresh();h.advance(1500);assert.equal(h.loops(),1);
+});
+test('TEST ALARM runs one bounded pattern for 4.5 seconds and repeated clicks do not stack timers',async()=>{
+  const h=await harness(setup(),trade());
+  await button(h.elements['nifty-trade'],'TEST ALARM').listeners.click();
+  await button(h.elements['nifty-trade'],'TEST ALARM').listeners.click();
+  assert.equal(h.loops(),1);assert.equal(h.sounds(),1);h.advance(3000);assert.equal(h.sounds(),3);
+  h.advance(1500);assert.equal(h.loops(),0);const count=h.sounds();h.advance(3000);assert.equal(h.sounds(),count);
+});
+test('server closure or acknowledgement from another tab clears the repeating alarm',async()=>{
+  for(const action of ['close','ack']){
+    const {t,h}=await armedTrade();t.events=[stopEvent()];await h.refresh();assert.equal(h.loops(),1);
+    if(action==='close')h.data.trade=null;else t.events[0].acknowledged_at='other tab';
+    await h.refresh();assert.equal(h.loops(),0);
   }
-  const panel=h.elements['nifty-trade'];assert.match(text(panel),/TARGET 1 HIT/);assert.match(text(panel),/TARGET 2 HIT/);
-  assert.ok(find(panel,n=>n.className==='trade-stop'));
-  const reboot=await harness(setup(),t,h.storage);assert.equal(reboot.sounds(),0);
-  await button(reboot.elements['nifty-trade'],'TEST ALARM').listeners.click();await reboot.refresh();assert.equal(reboot.sounds(),1);
 });
 test('acknowledgement is a journal action, not a close; fetch failure pauses display',async()=>{
   const t=trade();t.events=[{event_id:'stop',kind:'STOP_HIT',at:'now',underlying:24790}];
@@ -84,4 +162,15 @@ test('acknowledgement is a journal action, not a close; fetch failure pauses dis
   assert.equal(JSON.parse(h.calls.find(c=>c.url.endsWith('/acknowledge')).options.body).event_id,'stop');
   assert.ok(!h.calls.some(c=>c.url.endsWith('/close')));
   h.data.fail=true;await h.refresh();assert.match(text(h.elements['nifty-trade']),/MONITORING PAUSED/);
+});
+test('invalid structural range never displays READY or entry button and prominently explains why',async()=>{
+  const reason='Underlying has already reached the structural stop or first target; this setup is no longer actionable.';
+  for(const state of ['READY','NO_TRADE']) {
+    const s={...setup(state),can_confirm:false,reason};
+    const h=await harness(s),panel=h.elements['nifty-trade'];
+    assert.equal(button(panel,'I TOOK THIS TRADE'),undefined);
+    assert.ok(!text(panel).includes('READY'));
+    assert.match(text(panel),/NO TRADE/);
+    assert.equal(find(panel,n=>n.className==='trade-paused').textContent,reason);
+  }
 });

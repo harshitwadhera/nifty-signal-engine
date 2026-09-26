@@ -199,3 +199,28 @@ def test_full_replay_sequence_with_target_then_stop(service):
             assert trade['status']=='ACTIVE' and trade['monitoring_status']=='PAUSED' and not events
     assert [e['kind'] for e in all_events]==['T1_HIT','STOP_HIT']
     assert trade['closed_at'] is None
+
+
+@pytest.mark.parametrize('direction,current,expected', [
+    ('CALL',24900,True),('CALL',24801,True),('CALL',24800,False),('CALL',24790,False),
+    ('CALL',25000,False),('CALL',25010,False),
+    ('PUT',24900,True),('PUT',24999,True),('PUT',25000,False),('PUT',25010,False),
+    ('PUT',24800,False),('PUT',24790,False)])
+def test_setup_structural_range_boundaries(service,direction,current,expected):
+    plan=service.test_record['plan']
+    plan.update(direction=direction, invalidation={'level':24800 if direction=='CALL' else 25000},
+                target1={'level':25000 if direction=='CALL' else 24800})
+    service.stream.live.return_value['instruments']=[observation(current)]
+    setup=service.setup('NIFTY')
+    assert setup['can_confirm'] is expected
+    assert setup['setup_state']==('READY' if expected else 'NO_TRADE')
+    if not expected:
+        assert setup['reason']=='Underlying has already reached the structural stop or first target; this setup is no longer actionable.'
+        with pytest.raises(ValueError): entered(service)
+
+
+@pytest.mark.parametrize('confirmation',[24800,24790,25000,25010,float('nan'),float('inf')])
+def test_invalid_confirmation_coordinate_cannot_show_ready(service,confirmation):
+    service.test_record['confirmation_price']=confirmation
+    setup=service.setup('NIFTY')
+    assert not setup['can_confirm'] and setup['setup_state']=='NO_TRADE'

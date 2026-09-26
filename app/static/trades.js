@@ -12,6 +12,7 @@
   }
   let audio = null, armed = false, busy = false, initialized = false;
   const seen = new Set();
+  const controllers = new Map(), acknowledged = new Set(), pendingAck = new Set(), closing = new Set();
   async function arm() {
     try {
       const Context = window.AudioContext || window.webkitAudioContext;
@@ -19,24 +20,61 @@
     } catch { armed = false; }
     return armed;
   }
-  function sound(stop=false) {
-    if (!armed || audio?.state !== 'running') return;
+  function sound(stop=false, voices=null) {
+    if (!armed || audio?.state !== 'running') return false;
     const osc = audio.createOscillator(), gain = audio.createGain();
     osc.connect(gain); gain.connect(audio.destination);
     osc.frequency.value = stop ? 880 : 520;
     gain.gain.setValueAtTime(.15, audio.currentTime);
     gain.gain.exponentialRampToValueAtTime(.001, audio.currentTime + (stop ? 1.2 : .3));
+    const cancel = () => {
+      try { osc.stop(); } catch {}
+      osc.disconnect(); gain.disconnect(); voices?.delete(cancel);
+    };
+    voices?.add(cancel);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); voices?.delete(cancel); };
     osc.start(); osc.stop(audio.currentTime + (stop ? 1.3 : .4));
+    return true;
   }
-  function alarms(events) {
-    for (const event of events || []) {
+  function silence(tradeId) {
+    const controller = controllers.get(tradeId);
+    if (!controller) return;
+    clearInterval(controller.interval); clearTimeout(controller.timeout);
+    for (const cancel of [...controller.voices]) cancel();
+    controllers.delete(tradeId);
+  }
+  function repeat(tradeId, eventId=null) {
+    if (!armed || audio?.state !== 'running') return;
+    if (controllers.get(tradeId)?.eventId === eventId) return;
+    silence(tradeId);
+    const controller = {eventId, voices:new Set(), interval:null, timeout:null};
+    controllers.set(tradeId, controller);
+    sound(true, controller.voices);
+    controller.interval = setInterval(() => sound(true, controller.voices), 1500);
+    if (eventId === null) controller.timeout = setTimeout(() => silence(tradeId), 4500);
+  }
+  function alarms(trades) {
+    const open = new Set(trades.filter(t => t.status !== 'USER_CLOSED' && !closing.has(t.trade_id)).map(t => t.trade_id));
+    for (const tradeId of controllers.keys()) if (!open.has(tradeId)) silence(tradeId);
+    for (const trade of trades) {
+      if (!open.has(trade.trade_id)) continue;
+      const events = trade.events || [];
+      const stop = events.find(e => e.kind === 'STOP_HIT' && !e.acknowledged_at &&
+        !acknowledged.has(e.event_id) && !pendingAck.has(e.event_id));
+      const controller = controllers.get(trade.trade_id);
+      if (controller?.eventId && controller.eventId !== stop?.event_id) silence(trade.trade_id);
+      // Only a persisted STOP_HIT event can start an alarm, never a displayed price.
+      // An already-started genuine stop stays latched through later data gaps.
+      if (stop && trade.monitoring_status === 'LIVE') repeat(trade.trade_id, stop.event_id);
+      for (const event of events.filter(e => e.kind === 'T1_HIT' || e.kind === 'T2_HIT')) {
       const key = 'manual-trade-alarm:'+event.event_id;
       let played = seen.has(key);
       try { played ||= localStorage.getItem(key) === 'played'; } catch {}
       if (!initialized || event.acknowledged_at || played) { seen.add(key); continue; }
-      if (armed) {
-        sound(event.kind === 'STOP_HIT'); seen.add(key);
+      if (armed && trade.monitoring_status === 'LIVE' && sound()) {
+        seen.add(key);
         try { localStorage.setItem(key, 'played'); } catch {}
+      }
       }
     }
   }
@@ -91,8 +129,13 @@
   function close(trade) {
     dialog('I exited the trade', [['Contract', trade.option_symbol], ['Quantity', trade.quantity]], [
       {name:'premium', label:'Actual exit option premium (optional)', optional:true, min:0}
-    ], 'CONFIRM EXIT', v => request('/api/trades/'+trade.trade_id+'/close', {
-      actual_exit_premium:v.premium.value === '' ? null : Number(v.premium.value)}));
+    ], 'CONFIRM EXIT', async v => {
+      closing.add(trade.trade_id); silence(trade.trade_id);
+      try {
+        await request('/api/trades/'+trade.trade_id+'/close', {
+          actual_exit_premium:v.premium.value === '' ? null : Number(v.premium.value)});
+      } catch (error) { closing.delete(trade.trade_id); throw error; }
+    });
   }
   function paint(index, setup, trade) {
     const box = get(index+'-trade'); box.replaceChildren(); box.className = 'trade-box';
@@ -108,19 +151,29 @@
         const banner = el('div', event.kind === 'STOP_HIT' ? 'EXIT TRADE — UNDERLYING STOP HIT' :
           event.kind === 'T1_HIT' ? 'TARGET 1 HIT' : 'TARGET 2 HIT', event.kind === 'STOP_HIT' ? 'trade-stop' : 'trade-target');
         fields(banner, [['Observed underlying', event.underlying], ['Timestamp', event.at]]);
-        if (event.acknowledged_at) banner.append(el('p', 'Acknowledged — trade remains open'));
+        if (event.acknowledged_at || acknowledged.has(event.event_id)) banner.append(el('p', 'Acknowledged — trade remains open'));
         else button(banner, 'ACKNOWLEDGE', async () => {
-          try { await request('/api/trades/'+trade.trade_id+'/acknowledge', {event_id:event.event_id}); await refresh(); }
-          catch (e) { banner.append(el('p', e.message)); }
+          pendingAck.add(event.event_id);
+          if (event.kind === 'STOP_HIT') silence(trade.trade_id);
+          try {
+            await request('/api/trades/'+trade.trade_id+'/acknowledge', {event_id:event.event_id});
+            acknowledged.add(event.event_id); await refresh();
+          } catch (e) { banner.append(el('p', 'Acknowledgement not saved. Please retry. '+e.message)); }
+          finally { pendingAck.delete(event.event_id); }
         });
         box.append(banner);
       }
       const audioStatus = el('p', armed ? 'Sound armed for this tab' : 'Sound not armed — use TEST ALARM'); box.append(audioStatus);
-      button(box, 'TEST ALARM', async () => { await arm(); sound(true); audioStatus.textContent = armed ? 'Test sound played. Verify you heard it.' : 'Sound blocked by browser. Visual alerts remain available.'; });
+      button(box, 'TEST ALARM', async () => {
+        await arm();
+        // Consult server state again after arming, including saved acknowledgements.
+        await refresh();
+        if (!controllers.get(trade.trade_id)?.eventId && !closing.has(trade.trade_id)) repeat(trade.trade_id);
+        get(index+'-trade').append(el('p', armed ? 'Test pattern lasts 4.5 seconds. An active stop alarm continues until acknowledged.' : 'Sound blocked by browser. Visual alerts remain available.'));
+      });
       button(box, 'I EXITED THE TRADE', () => close(trade));
-      alarms(trade.events);
     } else {
-      const state = setup?.setup_state || 'NO_TRADE';
+      const state = setup?.setup_state === 'READY' && !setup.can_confirm ? 'NO_TRADE' : setup?.setup_state || 'NO_TRADE';
       box.append(el('h3', state === 'NO_TRADE' ? 'NO TRADE' : state === 'WAITING' ? 'WAIT FOR TRIGGER' : 'READY'));
       if (state !== 'NO_TRADE') {
         const signal = setup.signal, r = signal.record, p = r.plan;
@@ -136,7 +189,9 @@
         if (state === 'WAITING') box.append(el('p', 'No active stop monitoring until you confirm a manual trade.'));
         if (setup.can_confirm) button(box, 'I TOOK THIS TRADE', () => confirm(setup));
       }
-      if (setup?.reason) box.append(el('p', setup.reason));
+      if (setup?.reason) {
+        const reason = el('p', setup.reason, 'trade-paused'); reason.setAttribute('role', 'status'); box.append(reason);
+      }
     }
     box.append(el('p', 'This stop is based on NIFTY/BANKNIFTY, not option premium.', 'note'));
   }
@@ -145,6 +200,7 @@
     if (busy) return; busy = true;
     try {
       const active = await request('/api/trades/active'); cached = active.items;
+      alarms(cached);
       for (const index of ['nifty', 'banknifty']) {
         const trade = cached.find(t => t.index_name === index.toUpperCase());
         let setup;
@@ -164,4 +220,5 @@
     } finally { busy = false; }
   }
   refresh(); setInterval(refresh, 2000);
+  window.addEventListener?.('pagehide', () => { for (const id of controllers.keys()) silence(id); });
 })();
