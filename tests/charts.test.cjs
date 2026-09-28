@@ -56,7 +56,97 @@ test('both charts load once after hours, use one 5-second timer, and resume only
     ['2026-09-28T15:39:59+05:30', 2], ['2026-09-28T15:40:00+05:30', 0],
     ['2026-10-03T10:00:00+05:30', 0], ['2026-10-04T10:00:00+05:30', 0]]) {
     h.calls.length = 0; h.state.now = now; await h.poll(); assert.equal(h.calls.length, count, now);
+    if (count) assert.deepEqual(h.calls.map(c => c.url), [
+      '/api/candles/NIFTY?interval=5m&limit=3', '/api/candles/BANKNIFTY?interval=5m&limit=3'
+    ]);
   }
+});
+
+
+test('automatic refresh merges only recent candles and keeps the chart bounded', async () => {
+  const initial = payload('NIFTY', '5m', 100);
+  const bank = payload('BANKNIFTY', '5m', 100);
+  const h = await page('2026-09-28T10:01:00+05:30', async url => {
+    const parsed = new URL(url, 'http://test');
+    const isBank = parsed.pathname.includes('BANKNIFTY');
+    const limit = Number(parsed.searchParams.get('limit'));
+    const source = isBank ? bank : initial;
+    return response({...source, candles: source.candles.slice(-limit)});
+  });
+  assert.equal(h.bars().length, 100);
+  h.calls.length = 0;
+  const formingKey = h.bars().at(-1).getAttribute('data-start');
+  initial.candles.at(-1).close = 999;
+  await h.poll();
+  assert.deepEqual(h.calls.map(c => c.url), [
+    '/api/candles/NIFTY?interval=5m&limit=3', '/api/candles/BANKNIFTY?interval=5m&limit=3'
+  ]);
+  assert.equal(h.bars().length, 100);
+  assert.equal(h.bars().at(-1).getAttribute('data-start'), formingKey);
+  assert.match(h.bars().at(-1).children[0].textContent, /C 999.00/);
+
+  initial.candles.at(-1).completed = true;
+  const last = initial.candles.at(-1);
+  initial.candles.push({...last, start_time: last.end_time,
+    end_time: new Date(Date.parse(last.end_time) + 300000).toISOString(),
+    open: 999, high: 1002, low: 998, close: 1001, completed: false, partial: false, source: 'live'});
+  await h.poll();
+  assert.equal(h.bars().length, 100);
+  assert.match(h.bars().at(-1).children[0].textContent, /C 1,001.00/);
+  assert.match(h.bars().at(-1).className, /chart-forming/);
+});
+
+test('incremental correction updates authoritative candle values without replacing its DOM node', async () => {
+  const initial = payload('NIFTY', '5m', 5);
+  const h = await page('2026-09-28T10:01:00+05:30', async url => {
+    const parsed = new URL(url, 'http://test');
+    const source = parsed.pathname.includes('BANKNIFTY') ? payload('BANKNIFTY', '5m', 5) : initial;
+    return response({...source, candles: source.candles.slice(-Number(parsed.searchParams.get('limit')))});
+  });
+  const target = h.bars().at(-2), key = target.getAttribute('data-start');
+  initial.candles.at(-2).close = 108.5;
+  initial.candles.at(-2).partial = false;
+  initial.candles.at(-2).source = 'historical';
+  await h.poll();
+  const corrected = h.bars().find(bar => bar.getAttribute('data-start') === key);
+  assert.equal(corrected, target);
+  assert.match(corrected.children[0].textContent, /C 108.50/);
+  assert.doesNotMatch(corrected.className, /chart-partial/);
+});
+
+test('incremental gaps or malformed recent data fall back to a full 100-candle refresh', async () => {
+  const h = await page();
+  h.calls.length = 0;
+  const full = payload('NIFTY', '5m', 4);
+  const gap = payload('NIFTY', '5m', 3);
+  for (const candle of gap.candles) {
+    candle.start_time = new Date(Date.parse(candle.start_time) + 3600000).toISOString();
+    candle.end_time = new Date(Date.parse(candle.end_time) + 3600000).toISOString();
+  }
+  h.state.request = async url => {
+    const parsed = new URL(url, 'http://test');
+    if (parsed.pathname.includes('BANKNIFTY')) return response(payload('BANKNIFTY'));
+    return response(Number(parsed.searchParams.get('limit')) === 3 ? gap : full);
+  };
+  await h.poll();
+  assert.deepEqual(h.calls.filter(c => c.url.includes('/NIFTY?')).map(c => c.url), [
+    '/api/candles/NIFTY?interval=5m&limit=3',
+    '/api/candles/NIFTY?interval=5m&limit=100'
+  ]);
+  assert.equal(h.bars().length, 4);
+
+  h.calls.length = 0;
+  const malformed = {...payload(), candles: [{...payload().candles[0], start_time: '2026-09-28T09:15:00'}]};
+  h.state.request = async url => {
+    const parsed = new URL(url, 'http://test');
+    if (parsed.pathname.includes('BANKNIFTY')) return response(payload('BANKNIFTY'));
+    return response(Number(parsed.searchParams.get('limit')) === 3 ? malformed : full);
+  };
+  await h.poll();
+  assert.deepEqual(h.calls.filter(c => c.url.includes('/NIFTY?')).map(c => c.url), [
+    '/api/candles/NIFTY?interval=5m&limit=3',
+    '/api/candles/NIFTY?interval=5m&limit=100'
+  ]);
 });
 
 test('timeframe controls and manual refresh fetch only their chart immediately, even on weekends', async () => {

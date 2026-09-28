@@ -23,8 +23,12 @@ async function page(now, missingTicks=false) {
     '/api/signals/current':{signals:['NIFTY','BANKNIFTY'].map(index=>({index,decision:'NO_TRADE'}))},
     '/api/options/nifty':{expiries:['2026-10-06']},
     '/api/options/banknifty':{expiries:['2026-10-27']},
-    '/api/candles/NIFTY':{symbol:'NIFTY 50',interval:'5m',candles:[]},
-    '/api/candles/BANKNIFTY':{symbol:'NIFTY BANK',interval:'5m',candles:[]},
+    '/api/candles/NIFTY':{symbol:'NIFTY 50',interval:'5m',candles:[{
+      start_time:'2026-09-28T09:55:00+05:30',end_time:'2026-09-28T10:00:00+05:30',
+      open:100,high:101,low:99,close:100.5,completed:false,partial:false,source:'live'}]},
+    '/api/candles/BANKNIFTY':{symbol:'NIFTY BANK',interval:'5m',candles:[{
+      start_time:'2026-09-28T09:55:00+05:30',end_time:'2026-09-28T10:00:00+05:30',
+      open:100,high:101,low:99,close:100.5,completed:false,partial:false,source:'live'}]},
     '/api/trades/active':{items:[]},
     '/api/trades/setup/nifty':{setup_state:'NO_TRADE'},
     '/api/trades/setup/banknifty':{setup_state:'NO_TRADE'}
@@ -47,6 +51,9 @@ const initialRequests=['/api/connection','/api/market/live','/api/market/structu
   '/api/candles/NIFTY?interval=5m&limit=100','/api/candles/BANKNIFTY?interval=5m&limit=100',
   '/api/options/nifty','/api/options/banknifty','/api/signals/current',
   '/api/trades/active','/api/trades/setup/nifty','/api/trades/setup/banknifty'].sort();
+const recurringRequests=initialRequests.map(url=>url
+  .replace('/api/candles/NIFTY?interval=5m&limit=100','/api/candles/NIFTY?interval=5m&limit=3')
+  .replace('/api/candles/BANKNIFTY?interval=5m&limit=100','/api/candles/BANKNIFTY?interval=5m&limit=3')).sort();
 
 test('the shared helper is loaded before every consumer as ordered deferred scripts',()=>{
   assert.deepEqual(scripts.map(([, , file])=>file),
@@ -76,7 +83,7 @@ test('all polls resume at 09:00, stop at 15:40 and resume on the next weekday wi
     ['2026-09-28T15:40:00+05:30',false],['2026-10-03T10:00:00+05:30',false],
     ['2026-10-05T09:00:00+05:30',true]]) {
     h.state.now=now;h.calls.length=0;await h.poll();
-    assert.deepEqual([...h.calls].sort(),allowed?initialRequests:[],now);
+    assert.deepEqual([...h.calls].sort(),allowed?recurringRequests:[],now);
   }
 });
 

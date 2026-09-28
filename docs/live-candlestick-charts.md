@@ -1,7 +1,8 @@
 # Market Charts (Task 1)
 
 Two browser-rendered SVG candlestick charts use the existing `/api/candles/NIFTY`
-and `/api/candles/BANKNIFTY` endpoints, with `interval=5m|15m|30m&limit=100`.
+and `/api/candles/BANKNIFTY` endpoints. Initial, manual and timeframe-change loads
+request `limit=100`; routine five-second refreshes request only `limit=3`.
 Default: 5m. The existing aliases resolve to `NIFTY 50` and `NIFTY BANK`.
 Cards sit side by side above 720px and stack at or below that width.
 
@@ -43,16 +44,23 @@ the window. This does not change active-trade checks or alarm timers.
 Each chart permits only one request at a time. A timeframe change aborts the old
 request, waits for it to settle, and loads only the latest selection. Generation
 checks reject late responses. Polls and manual refreshes skip an in-flight request.
-Requests have a ten-second timeout. The SVG root, axes, and surviving candle nodes
-are reused; at most 100 candles and one bounded response per chart are retained.
-Listeners, resize observers, and timers are installed once, not on each refresh.
+Requests have a ten-second timeout. Automatic refreshes merge the latest three
+authoritative backend candles by start time into the browser's existing 100-candle
+buffer. Matching candles are replaced so forming bars, completion transitions and
+historical recovery corrections remain authoritative. If the incremental response
+is malformed, has no overlap with the current buffer, moves backward, or introduces
+an unexpected same-session gap, the browser falls back to a full 100-candle reload.
+The SVG root, axes, and surviving candle nodes are reused; at most 100 candles are
+retained. Listeners, resize observers, and timers are installed once, not per refresh.
 
-Incremental load per open dashboard tab during the permitted window: two small
+Incremental load per open dashboard tab during the permitted window remains two
 HTTP reads every five seconds (0.4 requests/second, 1,440/hour, about 9,600 over
-the 400-minute window), plus explicit manual actions. Each response contains at
-most 100 bars. At roughly 25–40 KB per response, uncompressed transfer is about
-10–16 KB/second (240–384 MB per full window per tab). Actual size depends on
-candle fields and compression. This is an estimate, not an EC2 measurement.
+the 400-minute window), plus explicit manual actions, but routine responses now
+contain at most three bars instead of 100. Using the previous 25–40 KB estimate for
+100 bars as a rough scale, routine responses should normally be around 1–2 KB plus
+HTTP overhead, or roughly 10–20 MB of uncompressed candle JSON per full trading
+window per tab before occasional full-reload fallbacks. Actual size depends on
+fields, headers and compression. This is an estimate, not an EC2 measurement.
 Rendering runs in the browser. Server work is existing memory/SQLite reads and
 JSON serialization; there are no extra Zerodha REST/history calls, writes, or
 background workers from chart requests. Multiple open tabs multiply the load.
@@ -69,9 +77,11 @@ Backend production files, SQLite schema, authentication, WebSocket processing,
 options freshness/calculations, signal scoring, and trade/stop/target behavior
 are unchanged. Tests cover both symbols and all three UI intervals, limits,
 invalid intervals, current/completed bars and the absence of broker calls.
-Browser logic tests cover initial loads, the IST polling boundaries/weekends,
-manual refresh, timeframe races, no overlapping calls, preserved charts on error,
-partial/recovery annotations, bounded nodes, resize and timezone independence.
+Browser logic tests cover initial full loads, three-candle incremental refreshes,
+merge/correction behavior, full-reload fallback on gaps or malformed recent data,
+the IST polling boundaries/weekends, manual refresh, timeframe races, no overlapping
+calls, preserved charts on error, partial/recovery annotations, bounded nodes,
+resize and timezone independence.
 
 Run `node --test tests/*.test.cjs` and `.\.venv\Scripts\python.exe -m pytest -q`.
 DOM doubles test behavior, not pixel layout; check desktop and mobile in a real

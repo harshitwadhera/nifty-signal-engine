@@ -3,8 +3,10 @@
   'use strict';
   const get = id => document.getElementById(id);
   const intervals = ['5m', '15m', '30m'];
+  const FULL_LIMIT = 100, INCREMENTAL_LIMIT = 3;
   const clock = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'});
   const day = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short'});
+  const calendarDay = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'});
   const price = value => value.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
   const stamp = value => `${day.format(value)} ${clock.format(value)} IST`;
   const attrs = (node, values) => { for (const [key, value] of Object.entries(values)) node.setAttribute(key, value); };
@@ -12,6 +14,7 @@
     const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
     attrs(node, values); node.textContent = text; return node;
   }
+  class CandleDataError extends Error {}
   function awareTime(value) {
     // Refuse naive timestamps instead of interpreting them in the device timezone.
     if (typeof value !== 'string' || !/(Z|[+-]\d{2}:\d{2})$/i.test(value)) return NaN;
@@ -19,7 +22,7 @@
   }
   function candlesFrom(data, symbol, interval) {
     if (data?.symbol !== symbol || data.interval !== interval || !Array.isArray(data.candles) || data.candles.length > 100) {
-      throw new Error('Unexpected candle response.');
+      throw new CandleDataError('Unexpected candle response.');
     }
     let previous = -Infinity;
     return data.candles.map(c => {
@@ -28,11 +31,29 @@
           !['open', 'high', 'low', 'close'].every(key => typeof c[key] === 'number' && Number.isFinite(c[key])) ||
           c.low > Math.min(c.open, c.close) || c.high < Math.max(c.open, c.close) ||
           typeof c.completed !== 'boolean' || typeof c.partial !== 'boolean' || typeof c.source !== 'string') {
-        throw new Error('Invalid candle data.');
+        throw new CandleDataError('Invalid candle data.');
       }
       previous = start;
       return {...c, start, end};
     });
+  }
+  function mergeIncremental(current, incoming, interval) {
+    if (!current.length || !incoming.length) return null;
+    const known = new Map(current.map(c => [c.start, c]));
+    if (!incoming.some(c => known.has(c.start)) || incoming.at(-1).start < current.at(-1).start) return null;
+    const duration = Number.parseInt(interval, 10) * 60000;
+    const sameSessionDay = (a, b) => calendarDay.format(a) === calendarDay.format(b);
+    for (let i = 1; i < incoming.length; i++) {
+      const previous = incoming[i - 1], next = incoming[i];
+      if (sameSessionDay(previous.start, next.start) && next.start - previous.start !== duration) return null;
+    }
+    const firstNew = incoming.find(c => c.start > current.at(-1).start);
+    if (firstNew) {
+      const previous = current.at(-1);
+      if (sameSessionDay(previous.start, firstNew.start) && firstNew.start - previous.start !== duration) return null;
+    }
+    for (const candle of incoming) known.set(candle.start, candle);
+    return [...known.values()].sort((a, b) => a.start - b.start).slice(-FULL_LIMIT);
   }
   function description(c) {
     return `${stamp(c.start)} – ${clock.format(c.end)} IST · O ${price(c.open)}  H ${price(c.high)}  L ${price(c.low)}  C ${price(c.close)}\n` +
@@ -83,14 +104,14 @@
         this.interval = next; this.version++; this.error = '';
         // Serialize requests even if several selections change before an abort settles.
         if (this.busy) this.controller.abort();
-        else this.refresh();
+        else this.refresh(true);
         this.status();
       });
-      get(id + '-chart-refresh').addEventListener('click', () => this.refresh());
+      get(id + '-chart-refresh').addEventListener('click', () => this.refresh(true));
       if (typeof ResizeObserver !== 'undefined') {
         this.resize = new ResizeObserver(() => this.render()); this.resize.observe(this.frame);
       }
-      this.render(); this.refresh();
+      this.render(); this.refresh(true);
     }
     status() {
       const parts = [];
@@ -109,19 +130,35 @@
       get(this.id + '-chart-refresh').disabled = this.busy;
       this.frame.setAttribute('aria-busy', this.busy);
     }
-    async refresh() {
+    async request(interval, limit) {
+      const response = await fetch(`/api/candles/${this.symbol}?interval=${interval}&limit=${limit}`, {
+        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10000)])
+      });
+      if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? 'Connect to Zerodha to load candles.' : 'Candle service unavailable.');
+      return candlesFrom(await response.json(), this.resolved, interval);
+    }
+    async refresh(forceFull = false) {
       if (this.busy) return;
       const version = this.version, interval = this.interval;
       this.busy = true; this.controller = new AbortController(); this.status();
       if (!this.rows.length) this.empty.textContent = 'Loading candles…';
       try {
-        const response = await fetch(`/api/candles/${this.symbol}?interval=${interval}&limit=100`, {
-          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10000)])
-        });
-        if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? 'Connect to Zerodha to load candles.' : 'Candle service unavailable.');
-        const data = await response.json();
+        const full = forceFull || !this.rows.length || this.loadedInterval !== interval;
+        let rows;
+        if (full) {
+          rows = await this.request(interval, FULL_LIMIT);
+        } else {
+          let recent = null;
+          try {
+            recent = await this.request(interval, INCREMENTAL_LIMIT);
+          } catch (error) {
+            if (!(error instanceof CandleDataError)) throw error;
+          }
+          if (version !== this.version) return;
+          rows = recent && mergeIncremental(this.rows, recent, interval);
+          if (!rows) rows = await this.request(interval, FULL_LIMIT);
+        }
         if (version !== this.version) return;
-        const rows = candlesFrom(data, this.resolved, interval);
         if (!rows.length && this.rows.length) throw new Error(`No ${interval} candles returned.`);
         if (this.loadedInterval !== interval) this.selected = null;
         this.rows = rows; this.loadedInterval = interval; this.fetchedAt = Date.now(); this.error = '';
@@ -136,8 +173,8 @@
         this.busy = false;
         if (!this.rows.length) this.render();
         this.status();
-        // Only an explicit timeframe change queues another request, even after hours.
-        if (version !== this.version) this.refresh();
+        // Only an explicit timeframe change queues another full request, even after hours.
+        if (version !== this.version) this.refresh(true);
       }
     }
     render() {
@@ -208,7 +245,7 @@
   setInterval(() => {
     for (const chart of charts) {
       chart.status();
-      if (window.marketAutoRefreshAllowed()) chart.refresh();
+      if (window.marketAutoRefreshAllowed()) chart.refresh(false);
     }
   }, 5000);
   if (typeof MutationObserver !== 'undefined') {
