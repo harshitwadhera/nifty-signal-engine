@@ -62,6 +62,6 @@
   }
   for (const index of ['nifty', 'banknifty']) {
     get(index + '-options-expiry').addEventListener('change', () => refresh(index));
-    refresh(index); setInterval(() => refresh(index), 5000);
+    refresh(index); setInterval(() => { if (window.marketAutoRefreshAllowed()) refresh(index); }, 5000);
   }
 })();
