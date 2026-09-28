@@ -47,5 +47,5 @@
     } finally { busy = false; }
   }
   refreshStructure();
-  setInterval(refreshStructure, 5000);
+  setInterval(() => { if (window.marketAutoRefreshAllowed()) refreshStructure(); }, 5000);
 })();
