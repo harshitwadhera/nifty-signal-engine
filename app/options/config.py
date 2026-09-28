@@ -8,6 +8,7 @@ class OptionsConfig:
     risk_free_rate: float = 0.06
     refresh_seconds: float = 20
     stale_seconds: float = 60
+    minimum_chain_coverage_percent: float = 95
     price_change_percent: float = 0.5
     oi_change_percent: float = 1
     liquid_spread_percent: float = 1
@@ -22,6 +23,8 @@ class OptionsConfig:
             raise ValueError("Invalid options configuration")
         if not -0.1 <= self.risk_free_rate <= 0.5 or not 15 <= self.refresh_seconds <= 300 or self.stale_seconds < self.refresh_seconds:
             raise ValueError("Invalid options rate or timing configuration")
+        if not 0 < self.minimum_chain_coverage_percent <= 100:
+            raise ValueError("Invalid options coverage threshold")
         if any(getattr(self, f.name) < 0 for f in fields(self) if f.name != "risk_free_rate"):
             raise ValueError("Options thresholds must be nonnegative")
         if (self.moderate_spread_percent < self.liquid_spread_percent
