@@ -213,6 +213,16 @@ def test_spread_and_liquidity():
     assert liquidity(row,OptionsConfig())["spread"] is None
 
 
+def test_rest_exchange_timestamp_is_interpreted_as_ist_on_utc_host(service):
+    options, _, clock = service
+    raw_quote = raw(clock)
+    # Kite REST parses the exchange timestamp string into a naive datetime.
+    raw_quote["timestamp"] = clock().replace(tzinfo=None)
+    quote = normalize_quote(raw_quote, clock(), "rest")
+    assert datetime.fromisoformat(quote["timestamp"]).utcoffset() == timedelta(hours=5, minutes=30)
+    assert options._fresh(quote, clock())
+
+
 def test_staleness_and_expired_session(service):
     options, _, clock = service
     options.cycle(force=True)
