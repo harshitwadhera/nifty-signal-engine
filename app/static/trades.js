@@ -122,9 +122,16 @@
       {name:'actual_entry_premium', label:'Actual option entry premium', value:setup.option_ltp},
       {name:'underlying_entry', label:'Underlying entry', value:setup.underlying_current},
       {name:'opened_at', label:'Entry timestamp (include timezone, e.g. +05:30)', type:'text', value:setup.server_time}
-    ], 'CONFIRM TRADE', v => request('/api/trades/'+r.signal_id+'/confirm', {
-      lots:Number(v.lots.value), quantity:Number(v.quantity.value), actual_entry_premium:Number(v.actual_entry_premium.value),
-      underlying_entry:Number(v.underlying_entry.value), opened_at:v.opened_at.value}));
+    ], 'CONFIRM TRADE', async v => {
+      try {
+        await request('/api/trades/'+r.signal_id+'/confirm', {
+          lots:Number(v.lots.value), quantity:Number(v.quantity.value), actual_entry_premium:Number(v.actual_entry_premium.value),
+          underlying_entry:Number(v.underlying_entry.value), opened_at:v.opened_at.value});
+      } finally {
+        // Even a lost response may have persisted a trade. Verify before stopping polling.
+        confirmationVersion++; activeStateKnown = false;
+      }
+    });
   }
   function close(trade) {
     dialog('I exited the trade', [['Contract', trade.option_symbol], ['Quantity', trade.quantity]], [
@@ -195,18 +202,24 @@
     }
     box.append(el('p', 'This stop is based on NIFTY/BANKNIFTY, not option premium.', 'note'));
   }
-  let cached = [];
-  async function refresh() {
+  let cached = [], activeStateKnown = false, confirmationVersion = 0;
+  const cachedSetups = {};
+  async function refresh({automatic = false} = {}) {
     if (busy) return; busy = true;
     try {
-      const active = await request('/api/trades/active'); cached = active.items;
+      const version = confirmationVersion;
+      const active = await request('/api/trades/active');
+      // A read started before confirmation cannot verify the resulting journal state.
+      if (version !== confirmationVersion) return;
+      cached = active.items; activeStateKnown = true;
       alarms(cached);
       for (const index of ['nifty', 'banknifty']) {
         const trade = cached.find(t => t.index_name === index.toUpperCase());
-        let setup;
-        if (!trade) {
+        let setup = cachedSetups[index];
+        if (!trade && (!automatic || window.marketAutoRefreshAllowed())) {
           try { setup = await request('/api/trades/setup/'+index); }
           catch { setup = {setup_state:'NO_TRADE', reason:'Trade setup unavailable; retrying.'}; }
+          cachedSetups[index] = setup;
         }
         paint(index, setup, trade);
       }
@@ -220,9 +233,9 @@
     } finally { busy = false; }
   }
   function shouldAutoRefresh() {
-    return window.marketAutoRefreshAllowed() ||
+    return window.marketAutoRefreshAllowed() || !activeStateKnown ||
       cached.some(trade => trade.status !== 'USER_CLOSED' && !closing.has(trade.trade_id));
   }
-  refresh(); setInterval(() => { if (shouldAutoRefresh()) refresh(); }, 2000);
+  refresh(); setInterval(() => { if (shouldAutoRefresh()) refresh({automatic:true}); }, 2000);
   window.addEventListener?.('pagehide', () => { for (const id of controllers.keys()) silence(id); });
 })();

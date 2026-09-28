@@ -18,29 +18,43 @@ function setup(state='READY'){return {setup_state:state,can_confirm:state==='REA
   signal:{record:{signal_id:'sig',plan,confirmation_price:24900},confidence:85}};}
 function trade(){return {trade_id:'trade',index_name:'NIFTY',option_symbol:'NIFTYTEST',quantity:65,
   actual_entry_premium:102,underlying_stop:24800,target1:25000,target2:25100,status:'ACTIVE',monitoring_status:'LIVE',events:[]};}
-async function harness(initialSetup=setup(),initialTrade=null,storage=new Map()) {
+async function harness(initialSetup=setup(),initialTrade=null,storage=new Map(),overrides={}) {
   const elements={},body=node('body'),calls=[],timers=new Map(); let sounds=0,cancelled=0,clock=0,nextTimer=1;
-  const data={setup:initialSetup,trade:initialTrade,fail:false};
+  const data={setup:initialSetup,trade:initialTrade,fail:false,now:'2026-09-28T10:00:00+05:30',...overrides};
+  class Clock extends Date {
+    constructor(...args){super(...(args.length ? args : [data.now]));}
+    static now(){return new Date(data.now).getTime();}
+  }
   class Audio {constructor(){this.state='running';this.currentTime=0;this.destination={};}async resume(){}
     createOscillator(){return {connect(){},disconnect(){},frequency:{},start(){sounds++;},stop(at){if(at===undefined)cancelled++;}};}
     createGain(){return {connect(){},disconnect(){},gain:{setValueAtTime(){},exponentialRampToValueAtTime(){}}};}}
   const context=vm.createContext({document:{body,getElementById:id=>elements[id] ||= node(),createElement:node},
     window:{AudioContext:Audio},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},
-    AbortSignal,Date,
+    AbortSignal,Date:Clock,
     setInterval:(fn,ms)=>{const id=nextTimer++;timers.set(id,{fn,ms,at:clock+ms,repeat:true});return id;},
     clearInterval:id=>timers.delete(id),
     setTimeout:(fn,ms)=>{const id=nextTimer++;timers.set(id,{fn,ms,at:clock+ms,repeat:false});return id;},
     clearTimeout:id=>timers.delete(id),fetch:async(url,options={})=>{
       calls.push({url,options}); if(data.fail)throw Error('offline');
       if(data.postWait && options.method==='POST')await data.postWait;
+      if(url.endsWith('/confirm')) {
+        data.trade ||= trade();
+        await data.afterConfirm?.();
+        if(data.loseConfirmResponse)throw Error('confirmation response lost');
+      }
       if(url.endsWith('/acknowledge') && data.trade) {
         const event=data.trade.events.find(e=>e.event_id===JSON.parse(options.body).event_id);
         if(event)event.acknowledged_at='persisted';
       }
       if(url.endsWith('/close'))data.trade=null;
-      const payload=url.endsWith('/active')?{items:data.trade?[data.trade]:[]}:url.includes('/setup/')?data.setup:{};
+      const payload=structuredClone(url.endsWith('/active')?{items:data.trade?[data.trade]:[]}:url.includes('/setup/')?data.setup:{});
+      if(url.endsWith('/active')) {
+        if(data.failActive > 0){data.failActive--;throw Error('journal unavailable');}
+        if(data.activeWait)await data.activeWait;
+      }
       return {ok:true,json:async()=>payload};
     }});
+  vm.runInContext(fs.readFileSync('app/static/market_hours.js','utf8'),context);
   vm.runInContext(fs.readFileSync('app/static/trades.js','utf8'),context); await flush();
   return {data,elements,body,calls,sounds:()=>sounds,cancelled:()=>cancelled,
     loops:()=>[...timers.values()].filter(t=>t.ms===1500).length,
@@ -173,4 +187,105 @@ test('invalid structural range never displays READY or entry button and prominen
     assert.match(text(panel),/NO TRADE/);
     assert.equal(find(panel,n=>n.className==='trade-paused').textContent,reason);
   }
+});
+
+const afterHours='2026-09-28T15:40:00+05:30';
+const urls=h=>h.calls.map(c=>c.url);
+async function submitConfirmation(h) {
+  button(h.elements['nifty-trade'],'I TOOK THIS TRADE').listeners.click();
+  await flush();
+  await find(h.body,n=>n.tag==='form').listeners.submit({preventDefault(){}});
+}
+
+test('idle trade panel loads once outside hours and resumes at the next market opening',async()=>{
+  const h=await harness(setup(),null,new Map(),{now:afterHours});
+  assert.deepEqual(urls(h),['/api/trades/active','/api/trades/setup/nifty','/api/trades/setup/banknifty']);
+  h.calls.length=0;await h.refresh();await h.refresh();assert.deepEqual(urls(h),[]);
+  h.data.now='2026-09-29T09:00:00+05:30';await h.refresh();
+  assert.deepEqual(urls(h),['/api/trades/active','/api/trades/setup/nifty','/api/trades/setup/banknifty']);
+});
+
+for(const status of ['ACTIVE','STOP_HIT','T1_HIT','T2_HIT']) {
+  test(status+' continues active checks outside hours without polling unrelated setups',async()=>{
+    const t={...trade(),status,monitoring_status:'PAUSED'};
+    const h=await harness(setup(),t,new Map(),{now:afterHours});
+    assert.ok(urls(h).includes('/api/trades/setup/banknifty'),'initial setup still loads');
+    h.calls.length=0;await h.refresh();await h.refresh();
+    assert.deepEqual(urls(h),['/api/trades/active','/api/trades/active']);
+    h.data.trade=null;await h.refresh();h.calls.length=0;
+    await h.refresh();assert.deepEqual(urls(h),[],'stop polling after closure is observed');
+  });
+}
+
+test('failed initial journal check retries outside hours until active state is known',async()=>{
+  for(const initialTrade of [null,trade()]) {
+    const h=await harness(setup(),initialTrade,new Map(),{now:afterHours,failActive:1});
+    assert.match(text(h.elements['nifty-trade']),/journal unavailable/);
+    h.calls.length=0;await h.refresh();
+    assert.deepEqual(urls(h),['/api/trades/active']);
+    if(initialTrade)assert.match(text(h.elements['nifty-trade']),/ACTIVE TRADE/);
+    h.calls.length=0;await h.refresh();
+    assert.deepEqual(urls(h),initialTrade?['/api/trades/active']:[]);
+  }
+});
+
+test('manual confirmation outside hours keeps monitoring after the follow-up read fails',async()=>{
+  const h=await harness(setup(),null,new Map(),{now:afterHours});
+  h.data.afterConfirm=()=>{h.data.failActive=1;};
+  await submitConfirmation(h);
+  assert.ok(h.data.trade,'confirmation was persisted');
+  assert.match(text(h.elements['nifty-trade']),/journal unavailable/);
+  h.calls.length=0;await h.refresh();
+  assert.deepEqual(urls(h),['/api/trades/active']);
+  assert.match(text(h.elements['nifty-trade']),/ACTIVE TRADE/);
+});
+
+test('lost confirmation response still reconciles persisted trades outside hours',async()=>{
+  const h=await harness(setup(),null,new Map(),{now:afterHours,loseConfirmResponse:true});
+  await submitConfirmation(h);assert.ok(h.data.trade);
+  h.calls.length=0;await h.refresh();
+  assert.deepEqual(urls(h),['/api/trades/active']);
+  assert.match(text(h.elements['nifty-trade']),/ACTIVE TRADE/);
+});
+
+test('an empty read begun before confirmation cannot stop polling at the cutoff',async()=>{
+  const h=await harness();let release;
+  h.data.activeWait=new Promise(resolve=>release=resolve);
+  const oldRefresh=h.refresh();
+  h.data.now=afterHours;
+  await submitConfirmation(h);
+  release();await oldRefresh;h.data.activeWait=null;
+  h.calls.length=0;await h.refresh();
+  assert.deepEqual(urls(h),['/api/trades/active']);
+  assert.match(text(h.elements['nifty-trade']),/ACTIVE TRADE/);
+});
+
+test('STOP arriving at cutoff stays latched through stale data/errors until manual acknowledge or close',async()=>{
+  const {t,h}=await armedTrade();h.data.now=afterHours;
+  t.status='STOP_HIT';t.events=[stopEvent()];await h.refresh();
+  assert.equal(h.loops(),1);assert.ok(find(h.elements['nifty-trade'],n=>n.className==='trade-stop'));
+  t.monitoring_status='PAUSED';await h.refresh();h.data.fail=true;await h.refresh();
+  const before=h.sounds();h.advance(6000);assert.equal(h.sounds(),before+4);assert.equal(h.loops(),1);
+  h.data.fail=false;
+  await button(h.elements['nifty-trade'],'ACKNOWLEDGE').listeners.click();
+  assert.equal(h.loops(),0);assert.equal(t.events[0].acknowledged_at,'persisted');
+  button(h.elements['nifty-trade'],'I EXITED THE TRADE').listeners.click();
+  await find(h.body,n=>n.tag==='form').listeners.submit({preventDefault(){}});
+  assert.equal(h.data.trade,null);h.calls.length=0;await h.refresh();assert.deepEqual(urls(h),[]);
+});
+
+for(const kind of ['T1_HIT','T2_HIT'])test(kind+' remains visible and acknowledgeable after the cutoff',async()=>{
+  const {t,h}=await armedTrade();h.data.now=afterHours;const before=h.sounds();
+  t.status=kind;t.events=[{event_id:kind,kind,at:afterHours,underlying:25101}];await h.refresh();
+  assert.equal(h.sounds(),before+1);assert.equal(h.loops(),0);
+  assert.ok(find(h.elements['nifty-trade'],n=>n.className==='trade-target'));
+  await button(h.elements['nifty-trade'],'ACKNOWLEDGE').listeners.click();
+  assert.equal(t.events[0].acknowledged_at,'persisted');
+});
+
+test('TEST ALARM outside hours remains bounded and does not stop active monitoring',async()=>{
+  const h=await harness(setup(),trade(),new Map(),{now:afterHours});
+  await button(h.elements['nifty-trade'],'TEST ALARM').listeners.click();
+  assert.equal(h.loops(),1);h.advance(4500);assert.equal(h.loops(),0);
+  h.calls.length=0;await h.refresh();assert.deepEqual(urls(h),['/api/trades/active']);
 });
