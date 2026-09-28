@@ -150,6 +150,21 @@ class OptionsService:
             if minute != self._last_persist:
                 for index in INDICES:
                     summary, rows = self.response(index, window=5)
+                    coverage = summary.get("coverage") or {}
+                    logger.info("", extra={
+                        "event": "options_chain_health",
+                        "status": "stale" if summary.get("stale") else "fresh",
+                        "index": index,
+                        "expiry": summary.get("selected_expiry"),
+                        "expected_contracts": coverage.get("expected_contracts"),
+                        "fresh_contracts": coverage.get("received_contracts"),
+                        "missing_contracts": (
+                            coverage.get("expected_contracts") - coverage.get("received_contracts")
+                            if isinstance(coverage.get("expected_contracts"), int)
+                            and isinstance(coverage.get("received_contracts"), int) else None
+                        ),
+                        "coverage_percent": coverage.get("percent"),
+                    })
                     # response returns all discovered contracts, including REST
                     # quotes outside the live window and fresh streaming overlays.
                     # Persist independently of ATM/spot availability.
@@ -199,6 +214,18 @@ class OptionsService:
                     self.book.update(contract, quote, self.clock())
             self.snapshots[(index, expiry)] = {"quotes": quotes, "at": self.clock().isoformat(),
                                                 "started_at": started.isoformat(), "future": future}
+        returned_contracts = sum(
+            1 for contract in contracts if "NFO:" + contract.trading_symbol in quotes
+        )
+        logger.info("", extra={
+            "event": "options_chain_rest_refresh",
+            "status": "complete" if returned_contracts == len(contracts) else "partial",
+            "index": index,
+            "expiry": expiry.isoformat(),
+            "expected_contracts": len(contracts),
+            "returned_contracts": returned_contracts,
+            "missing_contracts": len(contracts) - returned_contracts,
+        })
 
     def _refresh_loop(self):
         while not self.stop.is_set():

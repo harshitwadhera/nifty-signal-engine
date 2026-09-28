@@ -4,7 +4,7 @@ from datetime import datetime, time
 from math import isfinite
 from threading import RLock
 
-from app.analytics.session import local
+from app.analytics.session import IST, local
 
 
 def numeric(value):
@@ -25,10 +25,16 @@ def finite_json(value):
     return value
 
 
-def timestamp(value):
+def timestamp(value, source=None):
     if not isinstance(value, datetime):
         return None
-    return value.astimezone() if value.tzinfo is None else value
+    if value.tzinfo is not None:
+        return value
+    # Kite REST quote timestamps are exchange wall-clock timestamps (IST) parsed
+    # into naive datetimes. Treating them as the host timezone breaks freshness
+    # on UTC servers. WebSocket datetimes are created from epoch seconds by the
+    # SDK in the host timezone, so preserve the existing host-local conversion.
+    return value.replace(tzinfo=IST) if source == "rest" else value.astimezone()
 
 
 def normalize_quote(raw, received, source):
@@ -39,7 +45,7 @@ def normalize_quote(raw, received, source):
                          "orders": nonnegative(p.get("orders"))} for p in depth.get(side, [])[:5] if isinstance(p, dict)]
     bid = levels["buy"][0] if levels["buy"] else {}
     ask = levels["sell"][0] if levels["sell"] else {}
-    exchange = timestamp(raw.get("exchange_timestamp") or raw.get("timestamp"))
+    exchange = timestamp(raw.get("exchange_timestamp") or raw.get("timestamp"), source)
     return {"ltp": nonnegative(raw.get("last_price")), "oi": nonnegative(raw.get("oi")),
             "volume": nonnegative(raw.get("volume_traded") if source == "stream" else raw.get("volume")),
             "bid": bid.get("price"), "ask": ask.get("price"),

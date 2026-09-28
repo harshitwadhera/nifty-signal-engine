@@ -6,10 +6,18 @@ from datetime import datetime, timezone
 class JsonFormatter(logging.Formatter):
     def format(self, record):
         # Deliberately exclude messages, exception bodies, URLs and request inputs.
-        return json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(),
-                           "level": record.levelname,
-                           "event": getattr(record, "event", "application_event"),
-                           "status": getattr(record, "status", None)})
+        payload = {"timestamp": datetime.now(timezone.utc).isoformat(),
+                   "level": record.levelname,
+                   "event": getattr(record, "event", "application_event"),
+                   "status": getattr(record, "status", None)}
+        # Safe operational diagnostics only. Never add credentials, tokens,
+        # callback URLs, request inputs, or exception bodies here.
+        for key in ("index", "expiry", "expected_contracts", "returned_contracts",
+                    "fresh_contracts", "missing_contracts", "coverage_percent"):
+            value = getattr(record, key, None)
+            if value is not None:
+                payload[key] = value
+        return json.dumps(payload)
 
 
 def configure_logging():
