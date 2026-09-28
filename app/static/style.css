@@ -3,6 +3,38 @@
 .live{color:#86efac}.stale{color:#f5cb81}article .note{margin-top:10px;font-size:.8rem}article p{margin-top:12px}
 .section-title{font-size:1.5rem;margin-top:40px}.structure-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.structure-grid dl{display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:.9rem}.structure-grid dt{color:#acbfd7}.structure-grid dd{margin:0;text-align:right;overflow-wrap:anywhere}.structure-grid p{font-size:.9rem}@media(max-width:650px){.structure-grid{grid-template-columns:1fr}}
 select{background:#101827;color:#e6edf7;border:1px solid #528ac7;border-radius:6px;padding:8px;font:inherit;max-width:100%}
+/* Locally rendered market charts; rules are scoped to the chart cards. */
+.chart-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.market-chart{min-width:0;padding:16px}
+.chart-heading,.chart-controls{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.chart-heading h2{font-size:1.1rem;color:#e6edf7}
+.chart-price{font-size:1rem;font-variant-numeric:tabular-nums;color:#b8d9ff}
+.chart-controls{font-size:.85rem}
+.chart-controls button{margin:0;padding:8px}
+.chart-frame{margin-top:20px;min-width:0}
+.candle-chart{display:block;width:100%;height:auto;min-height:240px;outline-offset:4px}
+.candle-chart:focus-visible{outline:2px solid #93c5fd}
+.chart-axes text,.chart-latest-label,.chart-empty{fill:#acbfd7;font-size:11px;font-variant-numeric:tabular-nums}
+.chart-empty{font-size:14px}
+.chart-axes line{stroke:#35455b;stroke-width:1}
+.chart-up{color:#69d6ac}
+.chart-down{color:#fb8796}
+.chart-wick{stroke:currentColor;stroke-width:1}
+.chart-body{fill:currentColor;stroke:currentColor;stroke-width:.5}
+.chart-forming .chart-body{fill:#1c293c;stroke-width:1.5}
+.chart-partial .chart-body{stroke:#f5cb81;stroke-width:1.2}
+.chart-origin{fill:#93c5fd}
+.chart-hit{fill:transparent}
+.chart-candle{cursor:crosshair}
+.chart-latest{stroke:#a6ccff;stroke-dasharray:3 4;pointer-events:none}
+.chart-latest-label{fill:#c8e2ff;font-weight:700}
+.chart-cursor{stroke:#acbfd7;stroke-dasharray:2 3;pointer-events:none}
+.market-chart .chart-readout{min-height:4.8em;font-size:.78rem;line-height:1.6;white-space:pre-line;font-variant-numeric:tabular-nums}
+.market-chart .chart-status{min-height:4.5em;margin-top:10px;font-size:.78rem;line-height:1.5;color:#f5cb81}
+.market-chart .note{font-size:.75rem}
+@media(max-width:720px){
+  .chart-grid{grid-template-columns:1fr}
+}
 .signal-grid .signal-neutral{color:#bac8da;font-size:1.4rem;font-weight:700}.signal-grid .signal-direction{color:#93c5fd;font-size:1.4rem;font-weight:700}.signal-grid details{border-top:1px solid #35455b;padding:12px 0;font-size:.85rem;overflow-wrap:anywhere}.signal-grid summary{cursor:pointer;color:#b9cde5}.signal-grid li{margin:8px 0;line-height:1.5}.signal-grid ul{padding-left:20px}
 /* Manual journal controls are separate from signal observations. */
 .trade-box{border:1px solid #64748b;border-radius:8px;padding:14px;margin-bottom:20px}.trade-box h3{margin-top:0}.trade-paused{background:#fff3cd;color:#664d03;padding:10px}.trade-stop{background:#991b1b;color:white;border:3px solid #ef4444;padding:12px;margin:10px 0;font-weight:bold}.trade-target{background:#dbeafe;color:#1e3a8a;padding:12px;margin:10px 0}dialog{max-width:560px;width:90%;border:1px solid #64748b;border-radius:10px;padding:20px}dialog::backdrop{background:#0008}dialog label{display:block;margin:10px 0}dialog input{display:block;width:95%;padding:8px}button{cursor:pointer;margin:4px}button:disabled{opacity:.6;cursor:wait}

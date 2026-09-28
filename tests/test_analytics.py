@@ -288,6 +288,36 @@ def test_new_endpoints_validation(engine):
         assert client.get("/api/candles/NIFTY_FUT").json()["symbol"] == "NIFTY_TEST_FUT"
 
 
+@pytest.mark.parametrize("alias,symbol", [("NIFTY", "NIFTY 50"), ("BANKNIFTY", "NIFTY BANK")])
+@pytest.mark.parametrize("interval", ["5m", "15m", "30m"])
+def test_chart_api_cached_history_forming_candle_and_limit(engine, alias, symbol, interval):
+    value, _, kite_client = engine
+    # Allow the existing five-second event-time lateness window to complete the previous bar.
+    value.aggregator.import_minutes(symbol, minutes(count=120), at(11, 15, 6))
+    value.aggregator.consume(tick(at(11, 15, 7), price=240, symbol=symbol))
+    expected = value.aggregator.candles(symbol, interval, 100)
+    assert expected[-2]["completed"] and expected[-2]["source"] == "historical"
+    assert expected[-1]["completed"] is False and expected[-1]["close"] == 240
+    # No authenticated session is required to read saved candles. Disable unrelated workers.
+    stream, options, factory = Mock(), Mock(), Mock()
+    stream.state = value.state
+    wrapper = Mock(wraps=value)
+    wrapper.start = Mock()
+    wrapper.shutdown = Mock()
+    with TestClient(create_app(Settings(), client_factory=factory, stream=stream,
+                               engine=wrapper, options=options)) as client:
+        for _ in range(2):
+            result = client.get(f"/api/candles/{alias}?interval={interval}&limit=100")
+            assert result.status_code == 200
+            assert result.json() == {"symbol": symbol, "interval": interval, "candles": expected}
+            assert client.get(f"/api/candles/{alias}?interval={interval}&limit=2").json()["candles"] == expected[-2:]
+        for query in ("interval=10m", "interval=invalid", "limit=0", "limit=1001"):
+            assert client.get(f"/api/candles/{alias}?{query}").status_code == 422
+    factory.assert_not_called()
+    assert kite_client.mock_calls == []
+    wrapper.recover_once.assert_not_called()
+
+
 def test_internal_tick_normalization():
     clock = Mock(return_value=at(10))
     session = SessionStore(clock)
