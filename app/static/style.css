@@ -11,7 +11,9 @@ select{background:#101827;color:#e6edf7;border:1px solid #528ac7;border-radius:6
 .chart-price{font-size:1rem;font-variant-numeric:tabular-nums;color:#b8d9ff}
 .chart-controls{font-size:.85rem}
 .chart-controls button{margin:0;padding:8px}
-.chart-frame{margin-top:20px;min-width:0}
+.chart-view-controls{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+.chart-view-controls button{padding:7px 9px}
+.chart-frame{margin-top:20px;min-width:0;touch-action:pan-y;user-select:none}
 .candle-chart{display:block;width:100%;height:auto;min-height:240px;outline-offset:4px}
 .candle-chart:focus-visible{outline:2px solid #93c5fd}
 .chart-axes text,.chart-latest-label,.chart-empty{fill:#acbfd7;font-size:11px;font-variant-numeric:tabular-nums}

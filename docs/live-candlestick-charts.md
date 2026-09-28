@@ -23,6 +23,12 @@ Cards sit side by side above 720px and stack at or below that width.
   requires timestamps with a UTC marker or numeric offset; naive timestamps are
   rejected. Session gaps are compressed, with dates on the time axis and readout.
 - Hover/tap inspects a bar; focused charts support arrow keys, Home and End.
+  Zoom +/− buttons and the mouse wheel switch among 100, 60, 30 and 15 visible
+  candles. Horizontal pointer/touch drag pans within the already-loaded 100-candle
+  buffer, and Reset view returns to the latest edge. The price axis rescales to the
+  visible window. A live refresh stays pinned only when the user is already at the
+  latest edge; a panned historical view is not snapped forward by new candles.
+  Zooming and panning are browser-only and make no additional API requests.
   The latest close and the actual displayed interval remain visible above each chart.
   If a timeframe switch fails, the old chart keeps its old interval label.
 - Empty history, disconnected feed, HTTP/network/timeout errors, and outdated
@@ -70,8 +76,9 @@ background workers from chart requests. Multiple open tabs multiply the load.
 No library, CDN, build step, framework, external runtime dependency, or license
 bundle was added. SVG is created with the native `createElementNS` API. CSP is
 unchanged. Current browsers need `AbortSignal.any`/`timeout`, as well as SVG and
-Intl; resize observation is optional. No zoom/pan, EMA/VWAP overlays, order markers,
-or AI features are included in this first version.
+Intl; resize observation is optional. Zoom/pan is local to the loaded 100-candle
+buffer; there is no infinite-history loading, pinch-to-zoom, vertical-axis dragging,
+EMA/VWAP overlay, order marker, or AI feature in this version.
 
 Backend production files, SQLite schema, authentication, WebSocket processing,
 options freshness/calculations, signal scoring, and trade/stop/target behavior
@@ -81,7 +88,8 @@ Browser logic tests cover initial full loads, three-candle incremental refreshes
 merge/correction behavior, full-reload fallback on gaps or malformed recent data,
 the IST polling boundaries/weekends, manual refresh, timeframe races, no overlapping
 calls, preserved charts on error, partial/recovery annotations, bounded nodes,
-resize and timezone independence.
+zoom/pan/reset behavior including panned live-refresh stability, resize and timezone
+independence.
 
 Run `node --test tests/*.test.cjs` and `.\.venv\Scripts\python.exe -m pytest -q`.
 DOM doubles test behavior, not pixel layout; check desktop and mobile in a real

@@ -149,6 +149,55 @@ test('incremental gaps or malformed recent data fall back to a full 100-candle r
   ]);
 });
 
+
+test('zoom, wheel, horizontal pan and reset stay client-side and preserve a panned history view during live updates', async () => {
+  const nifty = payload('NIFTY', '5m', 100);
+  const bank = payload('BANKNIFTY', '5m', 100);
+  const h = await page('2026-09-28T10:01:00+05:30', async url => {
+    const parsed = new URL(url, 'http://test');
+    const source = parsed.pathname.includes('BANKNIFTY') ? bank : nifty;
+    return response({...source, candles: source.candles.slice(-Number(parsed.searchParams.get('limit')))});
+  });
+  h.calls.length = 0;
+  assert.equal(h.bars().length, 100);
+
+  await h.get('nifty-chart-zoom-in').listeners.click();
+  assert.equal(h.bars().length, 60);
+  await h.get('nifty-chart-zoom-in').listeners.click();
+  assert.equal(h.bars().length, 30);
+
+  let wheelPrevented = false;
+  h.root().listeners.wheel({deltaY: -1, preventDefault() { wheelPrevented = true; }});
+  assert.equal(wheelPrevented, true);
+  assert.equal(h.bars().length, 15);
+  await h.get('nifty-chart-zoom-out').listeners.click();
+  assert.equal(h.bars().length, 30);
+  assert.deepEqual(h.calls, []);
+
+  const latestBeforePan = h.bars().at(-1).getAttribute('data-start');
+  h.root().listeners.pointerdown({button: 0, clientX: 100});
+  h.root().listeners.pointermove({clientX: 212, preventDefault() {}});
+  h.root().listeners.pointerup({});
+  const pannedRightEdge = h.bars().at(-1).getAttribute('data-start');
+  assert.ok(Number(pannedRightEdge) < Number(latestBeforePan));
+  assert.match(h.get('nifty-chart-quality').textContent, /View: 30\/100 history/);
+
+  nifty.candles.at(-1).completed = true;
+  const last = nifty.candles.at(-1);
+  nifty.candles.push({...last, start_time: last.end_time,
+    end_time: new Date(Date.parse(last.end_time) + 300000).toISOString(),
+    open: 205, high: 210, low: 200, close: 208, completed: false, partial: false, source: 'live'});
+  await h.poll();
+  assert.equal(h.bars().at(-1).getAttribute('data-start'), pannedRightEdge);
+  assert.match(h.get('nifty-chart-quality').textContent, /history/);
+
+  await h.get('nifty-chart-reset').listeners.click();
+  assert.equal(h.bars().length, 100);
+  assert.equal(h.bars().at(-1).getAttribute('data-start'), String(Date.parse(nifty.candles.at(-1).start_time)));
+  assert.match(h.get('nifty-chart-quality').textContent, /latest/);
+  assert.equal(h.get('nifty-chart-reset').disabled, true);
+});
+
 test('timeframe controls and manual refresh fetch only their chart immediately, even on weekends', async () => {
   const h = await page('2026-10-03T10:00:00+05:30'); h.calls.length = 0;
   await h.switch('15m'); await h.switch('30m', 'banknifty');

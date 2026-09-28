@@ -28,11 +28,11 @@
   </section>
   <p>Last tick received: <time id="updated">—</time></p>
   <h2 class="section-title">Market Charts</h2>
-  <p class="note">Latest 100 candles. Times are IST (Asia/Kolkata); gaps between sessions are compressed. Hover, tap or use arrow keys on a chart to inspect OHLC. Amber outlines indicate partial coverage; blue dots indicate recovered or mixed history. Forming candles remain visible.</p>
+  <p class="note">Latest 100 candles. Times are IST (Asia/Kolkata); gaps between sessions are compressed. Use Zoom +/− or the mouse wheel to zoom, drag horizontally to pan, and Reset view to return to the latest candles. Hover, tap or use arrow keys to inspect OHLC. Amber outlines indicate partial coverage; blue dots indicate recovered or mixed history. Forming candles remain visible.</p>
   <div class="chart-grid">
     <article class="market-chart" aria-labelledby="nifty-chart-title">
       <div class="chart-heading"><h2 id="nifty-chart-title">NIFTY</h2><span id="nifty-chart-price" class="chart-price">—</span></div>
-      <div class="chart-controls"><label>Timeframe <select id="nifty-chart-interval"><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label><button id="nifty-chart-refresh" type="button">Refresh chart</button></div>
+      <div class="chart-controls"><label>Timeframe <select id="nifty-chart-interval"><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label><span class="chart-view-controls" aria-label="NIFTY chart view controls"><button id="nifty-chart-zoom-out" type="button" title="Zoom out">Zoom −</button><button id="nifty-chart-zoom-in" type="button" title="Zoom in">Zoom +</button><button id="nifty-chart-reset" type="button">Reset view</button></span><button id="nifty-chart-refresh" type="button">Refresh chart</button></div>
       <div id="nifty-chart-frame" class="chart-frame"></div>
       <p id="nifty-chart-readout" class="chart-readout">Loading candles…</p>
       <p id="nifty-chart-quality" class="note"></p>
@@ -40,7 +40,7 @@
     </article>
     <article class="market-chart" aria-labelledby="banknifty-chart-title">
       <div class="chart-heading"><h2 id="banknifty-chart-title">BANKNIFTY</h2><span id="banknifty-chart-price" class="chart-price">—</span></div>
-      <div class="chart-controls"><label>Timeframe <select id="banknifty-chart-interval"><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label><button id="banknifty-chart-refresh" type="button">Refresh chart</button></div>
+      <div class="chart-controls"><label>Timeframe <select id="banknifty-chart-interval"><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label><span class="chart-view-controls" aria-label="BANKNIFTY chart view controls"><button id="banknifty-chart-zoom-out" type="button" title="Zoom out">Zoom −</button><button id="banknifty-chart-zoom-in" type="button" title="Zoom in">Zoom +</button><button id="banknifty-chart-reset" type="button">Reset view</button></span><button id="banknifty-chart-refresh" type="button">Refresh chart</button></div>
       <div id="banknifty-chart-frame" class="chart-frame"></div>
       <p id="banknifty-chart-readout" class="chart-readout">Loading candles…</p>
       <p id="banknifty-chart-quality" class="note"></p>

@@ -4,6 +4,7 @@
   const get = id => document.getElementById(id);
   const intervals = ['5m', '15m', '30m'];
   const FULL_LIMIT = 100, INCREMENTAL_LIMIT = 3;
+  const ZOOM_LEVELS = [15, 30, 60, 100];
   const clock = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'});
   const day = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short'});
   const calendarDay = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'});
@@ -65,6 +66,7 @@
       this.id = id; this.symbol = symbol; this.resolved = resolved;
       this.interval = '5m'; this.loadedInterval = null; this.rows = []; this.nodes = new Map();
       this.busy = false; this.version = 0; this.error = ''; this.selected = null;
+      this.visibleCount = FULL_LIMIT; this.anchorStart = null; this.visibleRows = []; this.dragX = null; this.step = 1;
       this.frame = get(id + '-chart-frame');
       this.root = svg('svg', {class: 'candle-chart', role: 'img', tabindex: '0',
         'aria-label': `${symbol} candlestick chart. Arrow keys inspect candles.`});
@@ -86,32 +88,114 @@
         const bar = event.target.closest('[data-start]');
         if (bar) { this.selected = Number(bar.getAttribute('data-start')); this.readout(); }
       };
-      this.root.addEventListener('pointermove', inspect);
+      this.root.addEventListener('pointerdown', event => {
+        if (event.button != null && event.button !== 0) return;
+        this.dragX = event.clientX;
+      });
+      this.root.addEventListener('pointermove', event => {
+        if (this.dragX != null && Number.isFinite(event.clientX)) {
+          const delta = event.clientX - this.dragX;
+          const steps = Math.trunc(delta / Math.max(this.step, 1));
+          if (steps) {
+            event.preventDefault?.();
+            this.pan(-steps);
+            this.dragX += steps * Math.max(this.step, 1);
+          }
+          return;
+        }
+        inspect(event);
+      });
+      const endDrag = () => { this.dragX = null; };
+      this.root.addEventListener('pointerup', endDrag);
+      this.root.addEventListener('pointercancel', endDrag);
       this.root.addEventListener('click', inspect);
-      this.root.addEventListener('pointerleave', () => { this.selected = null; this.readout(); });
+      this.root.addEventListener('pointerleave', () => {
+        endDrag(); this.selected = null; this.readout();
+      });
+      this.root.addEventListener('wheel', event => {
+        if (!this.rows.length || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+        event.preventDefault?.();
+        this.zoom(event.deltaY < 0 ? -1 : 1);
+      }, {passive: false});
       this.root.addEventListener('keydown', event => {
-        if (!this.rows.length || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const visible = this.visibleRows.length ? this.visibleRows : this.rows;
+        if (!visible.length || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        let index = this.rows.findIndex(c => c.start === this.selected);
-        if (index < 0) index = this.rows.length - 1;
-        index = event.key === 'Home' ? 0 : event.key === 'End' ? this.rows.length - 1 : index + (event.key === 'ArrowLeft' ? -1 : 1);
-        this.selected = this.rows[Math.max(0, Math.min(this.rows.length - 1, index))].start;
+        let index = visible.findIndex(c => c.start === this.selected);
+        if (index < 0) index = visible.length - 1;
+        index = event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1 : index + (event.key === 'ArrowLeft' ? -1 : 1);
+        this.selected = visible[Math.max(0, Math.min(visible.length - 1, index))].start;
         this.readout();
       });
       get(id + '-chart-interval').addEventListener('change', event => {
         const next = event.target.value;
         if (!intervals.includes(next) || next === this.interval) return;
-        this.interval = next; this.version++; this.error = '';
+        this.interval = next; this.version++; this.error = ''; this.resetView(false);
         // Serialize requests even if several selections change before an abort settles.
         if (this.busy) this.controller.abort();
         else this.refresh(true);
         this.status();
       });
       get(id + '-chart-refresh').addEventListener('click', () => this.refresh(true));
+      get(id + '-chart-zoom-in').addEventListener('click', () => this.zoom(-1));
+      get(id + '-chart-zoom-out').addEventListener('click', () => this.zoom(1));
+      get(id + '-chart-reset').addEventListener('click', () => this.resetView());
       if (typeof ResizeObserver !== 'undefined') {
         this.resize = new ResizeObserver(() => this.render()); this.resize.observe(this.frame);
       }
       this.render(); this.refresh(true);
+    }
+    visibleWindow() {
+      if (!this.rows.length) return {rows: [], start: 0, end: 0, pinned: true};
+      const count = Math.min(this.visibleCount, this.rows.length);
+      if (count >= this.rows.length) {
+        this.anchorStart = null;
+        return {rows: this.rows, start: 0, end: this.rows.length, pinned: true};
+      }
+      let end = this.rows.length;
+      if (this.anchorStart != null) {
+        const anchor = this.rows.findIndex(c => c.start === this.anchorStart);
+        if (anchor >= 0) end = anchor + 1;
+        else {
+          end = count;
+          this.anchorStart = this.rows[end - 1].start;
+        }
+      }
+      end = Math.max(count, Math.min(this.rows.length, end));
+      const start = Math.max(0, end - count);
+      return {rows: this.rows.slice(start, end), start, end, pinned: end === this.rows.length && this.anchorStart == null};
+    }
+    updateViewControls() {
+      const level = ZOOM_LEVELS.indexOf(this.visibleCount);
+      get(this.id + '-chart-zoom-in').disabled = !this.rows.length || level <= 0;
+      get(this.id + '-chart-zoom-out').disabled = !this.rows.length || level === ZOOM_LEVELS.length - 1;
+      get(this.id + '-chart-reset').disabled = !this.rows.length || (this.visibleCount === FULL_LIMIT && this.anchorStart == null);
+    }
+    zoom(direction) {
+      if (!this.rows.length) return;
+      const index = ZOOM_LEVELS.indexOf(this.visibleCount);
+      const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, index + direction));
+      if (next === index) return;
+      this.visibleCount = ZOOM_LEVELS[next];
+      if (this.visibleCount >= this.rows.length) this.anchorStart = null;
+      this.selected = null;
+      this.render();
+    }
+    pan(delta) {
+      if (!this.rows.length || !Number.isFinite(delta) || delta === 0) return;
+      const view = this.visibleWindow();
+      if (view.rows.length >= this.rows.length) return;
+      const count = view.rows.length;
+      const end = Math.max(count, Math.min(this.rows.length, view.end + delta));
+      this.anchorStart = end === this.rows.length ? null : this.rows[end - 1].start;
+      this.selected = null;
+      this.render();
+    }
+    resetView(render = true) {
+      this.visibleCount = FULL_LIMIT;
+      this.anchorStart = null;
+      this.selected = null;
+      if (render) this.render();
     }
     status() {
       const parts = [];
@@ -128,6 +212,7 @@
       if (this.rows.length && this.rows.at(-1).end < Date.now() - 15000) parts.push('No recent candle.');
       get(this.id + '-chart-status').textContent = parts.join(' ');
       get(this.id + '-chart-refresh').disabled = this.busy;
+      this.updateViewControls();
       this.frame.setAttribute('aria-busy', this.busy);
     }
     async request(interval, limit) {
@@ -182,31 +267,39 @@
       this.root.setAttribute('viewBox', `0 0 ${width} 282`);
       this.empty.textContent = this.rows.length ? '' : this.error ? 'Candles unavailable' : this.busy ? 'Loading candles…' : 'No candle history yet';
       this.axes.setAttribute('visibility', this.rows.length ? 'visible' : 'hidden');
-      if (!this.rows.length) { get(this.id + '-chart-readout').textContent = 'No candles to inspect.'; return; }
-      const low = Math.min(...this.rows.map(c => c.low)), high = Math.max(...this.rows.map(c => c.high));
+      if (!this.rows.length) {
+        this.visibleRows = [];
+        this.updateViewControls();
+        get(this.id + '-chart-readout').textContent = 'No candles to inspect.';
+        return;
+      }
+      const view = this.visibleWindow(), visible = view.rows;
+      this.visibleRows = visible;
+      const low = Math.min(...visible.map(c => c.low)), high = Math.max(...visible.map(c => c.high));
       const padding = Math.max((high - low) * 0.08, Math.abs(high) * 0.0001, 0.05);
       const min = low - padding, max = high + padding;
       const y = value => bottom - (value - min) / (max - min) * (bottom - top);
-      const step = (right - 8) / this.rows.length, bodyWidth = Math.max(1, Math.min(10, step * 0.7));
+      const step = (right - 8) / visible.length, bodyWidth = Math.max(1, Math.min(14, step * 0.7));
+      this.step = step;
       this.x = index => 8 + step * (index + 0.5);
       this.priceTicks.forEach(({line, label}, i) => {
         const value = max - (max - min) * i / 4, position = y(value);
         attrs(line, {x1: 8, x2: right, y1: position, y2: position});
         attrs(label, {x: right + 6, y: position + 4}); label.textContent = price(value);
       });
-      const tickIndices = [...new Set([0, Math.round((this.rows.length - 1) / 2), this.rows.length - 1])];
+      const tickIndices = [...new Set([0, Math.round((visible.length - 1) / 2), visible.length - 1])];
       this.timeTicks.forEach(({time, date}, i) => {
         const index = tickIndices[i];
         attrs(time, {visibility: index === undefined ? 'hidden' : 'visible'});
         attrs(date, {visibility: index === undefined ? 'hidden' : 'visible'});
         if (index === undefined) return;
-        const c = this.rows[index], anchor = i === 0 ? 'start' : i === tickIndices.length - 1 ? 'end' : 'middle';
+        const c = visible[index], anchor = i === 0 ? 'start' : i === tickIndices.length - 1 ? 'end' : 'middle';
         attrs(time, {x: this.x(index), y: 250, 'text-anchor': anchor}); time.textContent = clock.format(c.start);
         attrs(date, {x: this.x(index), y: 268, 'text-anchor': anchor}); date.textContent = day.format(c.start);
       });
-      const present = new Set(this.rows.map(c => c.start));
+      const present = new Set(visible.map(c => c.start));
       for (const [key, node] of this.nodes) if (!present.has(key)) { node.group.remove(); this.nodes.delete(key); }
-      this.rows.forEach((c, i) => {
+      visible.forEach((c, i) => {
         let node = this.nodes.get(c.start);
         if (!node) {
           node = {group: svg('g', {'data-start': c.start}), title: svg('title'), hit: svg('rect', {class: 'chart-hit'}),
@@ -222,21 +315,29 @@
         attrs(node.body, {x: x - bodyWidth / 2, y: y(Math.max(c.open, c.close)), width: bodyWidth, height: Math.max(1, Math.abs(y(c.open) - y(c.close)))});
         attrs(node.origin, {cx: x, cy: bottom + 6, visibility: c.source === 'live' ? 'hidden' : 'visible'});
       });
-      const last = this.rows.at(-1), position = y(last.close);
-      attrs(this.latest, {x1: 8, x2: right, y1: position, y2: position, visibility: 'visible'});
-      // Price is also shown above the chart; avoid a label collision with a grid tick.
-      this.priceTicks.forEach(({label}) => label.setAttribute('visibility', Math.abs(Number(label.getAttribute('y')) - position - 4) < 15 ? 'hidden' : 'visible'));
-      attrs(this.latestLabel, {x: right + 6, y: position + 4}); this.latestLabel.textContent = price(last.close);
+      const last = this.rows.at(-1);
+      if (view.end === this.rows.length) {
+        const position = y(last.close);
+        attrs(this.latest, {x1: 8, x2: right, y1: position, y2: position, visibility: 'visible'});
+        this.priceTicks.forEach(({label}) => label.setAttribute('visibility', Math.abs(Number(label.getAttribute('y')) - position - 4) < 15 ? 'hidden' : 'visible'));
+        attrs(this.latestLabel, {x: right + 6, y: position + 4, visibility: 'visible'});
+        this.latestLabel.textContent = price(last.close);
+      } else {
+        this.latest.setAttribute('visibility', 'hidden');
+        this.latestLabel.setAttribute('visibility', 'hidden');
+      }
       get(this.id + '-chart-price').textContent = `${price(last.close)} · ${this.loadedInterval}`;
-      get(this.id + '-chart-quality').textContent = `${this.rows.filter(c => c.partial).length} partial · ${this.rows.filter(c => c.source !== 'live').length} recovered / mixed · ${this.rows.filter(c => !c.completed).length} forming · Time: IST`;
-      this.root.setAttribute('aria-label', `${this.symbol} ${this.loadedInterval} candlestick chart, latest close ${price(last.close)}. Arrow keys inspect candles; Home and End jump to first and last.`);
+      get(this.id + '-chart-quality').textContent = `${this.rows.filter(c => c.partial).length} partial · ${this.rows.filter(c => c.source !== 'live').length} recovered / mixed · ${this.rows.filter(c => !c.completed).length} forming · View: ${visible.length}/${this.rows.length} ${view.end === this.rows.length ? 'latest' : 'history'} · Time: IST`;
+      this.root.setAttribute('aria-label', `${this.symbol} ${this.loadedInterval} candlestick chart, latest close ${price(last.close)}, showing ${visible.length} of ${this.rows.length} candles. Wheel or zoom buttons change scale; drag horizontally to pan; arrow keys inspect visible candles.`);
+      this.updateViewControls();
       this.readout();
     }
     readout() {
-      if (!this.rows.length) return;
-      let index = this.rows.findIndex(c => c.start === this.selected);
-      if (index < 0) index = this.rows.length - 1;
-      get(this.id + '-chart-readout').textContent = description(this.rows[index]);
+      const visible = this.visibleRows.length ? this.visibleRows : this.rows;
+      if (!visible.length) return;
+      let index = visible.findIndex(c => c.start === this.selected);
+      if (index < 0) index = visible.length - 1;
+      get(this.id + '-chart-readout').textContent = description(visible[index]);
       attrs(this.cursor, {x1: this.x(index), x2: this.x(index), y1: 18, y2: 228, visibility: this.selected === null ? 'hidden' : 'visible'});
     }
   }
