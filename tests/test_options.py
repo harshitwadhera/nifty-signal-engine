@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock
 import json
 
@@ -214,13 +214,17 @@ def test_spread_and_liquidity():
 
 
 def test_rest_exchange_timestamp_is_interpreted_as_ist_on_utc_host(service):
-    options, _, clock = service
-    raw_quote = raw(clock)
-    # Kite REST parses the exchange timestamp string into a naive datetime.
-    raw_quote["timestamp"] = clock().replace(tzinfo=None)
-    quote = normalize_quote(raw_quote, clock(), "rest")
-    assert datetime.fromisoformat(quote["timestamp"]).utcoffset() == timedelta(hours=5, minutes=30)
-    assert options._fresh(quote, clock())
+    options, _, _ = service
+    # Mirrors the production symptom: Kite REST returns a naive 10:27 exchange
+    # clock while the AWS host receives it at 04:57 UTC (the same instant).
+    received = datetime(2026, 9, 28, 4, 57, 1, tzinfo=timezone.utc)
+    raw_quote = raw(lambda: datetime(2026, 9, 28, 10, 27, tzinfo=IST))
+    raw_quote["timestamp"] = datetime(2026, 9, 28, 10, 27)
+    quote = normalize_quote(raw_quote, received, "rest")
+    parsed = datetime.fromisoformat(quote["timestamp"])
+    assert parsed.utcoffset() == timedelta(hours=5, minutes=30)
+    assert parsed.astimezone(timezone.utc) == datetime(2026, 9, 28, 4, 57, tzinfo=timezone.utc)
+    assert options._fresh(quote, received)
 
 
 def test_staleness_and_expired_session(service):
