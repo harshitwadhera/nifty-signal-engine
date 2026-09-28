@@ -219,6 +219,10 @@
       }
     } finally { busy = false; }
   }
-  refresh(); setInterval(refresh, 2000);
+  function shouldAutoRefresh() {
+    return window.marketAutoRefreshAllowed() ||
+      cached.some(trade => trade.status !== 'USER_CLOSED' && !closing.has(trade.trade_id));
+  }
+  refresh(); setInterval(() => { if (shouldAutoRefresh()) refresh(); }, 2000);
   window.addEventListener?.('pagehide', () => { for (const id of controllers.keys()) silence(id); });
 })();
