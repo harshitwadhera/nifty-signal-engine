@@ -48,6 +48,8 @@ Run one application process, without extra workers or auto-reload. Restart after
 
 - Start the app with the command above and connect to Zerodha.
 - Quiet markets or missing fresh data can show STALE or NO TRADE.
+- **Market Charts** shows the latest 100 NIFTY/BANKNIFTY candles (5m by default; 15m and 30m available). Charts load once at any time, then refresh every five seconds only Monday–Friday, 09:00 inclusive to 15:40 exclusive IST. Timeframe changes and **Refresh chart** work outside those hours.
+- Hollow candles are still forming; amber outlines mark partial coverage and blue dots mark recovered/mixed history. Use Zoom +/− or the mouse wheel to zoom, drag horizontally to pan through the loaded 100 candles, and Reset view to return to the latest edge. Hover, tap or focus a chart and use arrow keys to inspect OHLC and source. Errors retain the last successful chart with a warning. See [chart behavior and implementation](docs/live-candlestick-charts.md).
 - Record a manual trade only after you actually enter it in Kite.
 - Use **TEST ALARM** to enable and check browser sound. Keep the dashboard open for alerts. Stop alarms continue until acknowledged or you confirm the trade exit.
 

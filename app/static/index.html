@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/market_hours.js" defer></script>
   <script src="/static/dashboard.js" defer></script>
+  <script src="/static/charts.js" defer></script>
   <script src="/static/structure.js" defer></script>
   <script src="/static/options.js" defer></script>
   <script src="/static/signals.js" defer></script>
@@ -26,6 +27,26 @@
     <article><h2>INDIA VIX</h2><p id="vix">—</p><div class="note">Last tick: <time id="vix-tick">—</time></div><div id="vix-source" class="note">Waiting for data</div></article>
   </section>
   <p>Last tick received: <time id="updated">—</time></p>
+  <h2 class="section-title">Market Charts</h2>
+  <p class="note">Latest 100 candles. Times are IST (Asia/Kolkata); gaps between sessions are compressed. Use Zoom +/− or the mouse wheel to zoom, drag horizontally to pan, and Reset view to return to the latest candles. Hover, tap or use arrow keys to inspect OHLC. Amber outlines indicate partial coverage; blue dots indicate recovered or mixed history. Forming candles remain visible.</p>
+  <div class="chart-grid">
+    <article class="market-chart" aria-labelledby="nifty-chart-title">
+      <div class="chart-heading"><h2 id="nifty-chart-title">NIFTY</h2><span id="nifty-chart-price" class="chart-price">—</span></div>
+      <div class="chart-controls"><label>Timeframe <select id="nifty-chart-interval"><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label><span class="chart-view-controls" aria-label="NIFTY chart view controls"><button id="nifty-chart-zoom-out" type="button" title="Zoom out">Zoom −</button><button id="nifty-chart-zoom-in" type="button" title="Zoom in">Zoom +</button><button id="nifty-chart-reset" type="button">Reset view</button></span><button id="nifty-chart-refresh" type="button">Refresh chart</button></div>
+      <div id="nifty-chart-frame" class="chart-frame"></div>
+      <p id="nifty-chart-readout" class="chart-readout">Loading candles…</p>
+      <p id="nifty-chart-quality" class="note"></p>
+      <p id="nifty-chart-status" class="chart-status" role="status"></p>
+    </article>
+    <article class="market-chart" aria-labelledby="banknifty-chart-title">
+      <div class="chart-heading"><h2 id="banknifty-chart-title">BANKNIFTY</h2><span id="banknifty-chart-price" class="chart-price">—</span></div>
+      <div class="chart-controls"><label>Timeframe <select id="banknifty-chart-interval"><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label><span class="chart-view-controls" aria-label="BANKNIFTY chart view controls"><button id="banknifty-chart-zoom-out" type="button" title="Zoom out">Zoom −</button><button id="banknifty-chart-zoom-in" type="button" title="Zoom in">Zoom +</button><button id="banknifty-chart-reset" type="button">Reset view</button></span><button id="banknifty-chart-refresh" type="button">Refresh chart</button></div>
+      <div id="banknifty-chart-frame" class="chart-frame"></div>
+      <p id="banknifty-chart-readout" class="chart-readout">Loading candles…</p>
+      <p id="banknifty-chart-quality" class="note"></p>
+      <p id="banknifty-chart-status" class="chart-status" role="status"></p>
+    </article>
+  </div>
   <h2 class="section-title">Signal observations</h2>
   <p class="note">NO TRADE is a normal result. Candidates need confirmation. These are observed underlying plans, not orders or fills; confidence is an evidence score, not a success probability.</p>
   <div class="structure-grid signal-grid">
@@ -45,5 +66,5 @@
     <article><h2>NIFTY Options</h2><label>Expiry <select id="nifty-options-expiry"><option value="">Nearest listed</option></select></label><div id="nifty-options"></div></article>
     <article><h2>BANKNIFTY Options</h2><label>Expiry <select id="banknifty-options-expiry"><option value="">Nearest listed</option></select></label><div id="banknifty-options"></div></article>
   </div>
-  <p class="note">Normal automatic polling runs Monday–Friday from 09:00:00 inclusive to 15:40:00 exclusive IST (Asia/Kolkata). Dashboard and trade-monitor data poll every 2 seconds; options, signals and market structure poll every 5 seconds. Outside this window, active-trade checks continue every 2 seconds until closure, and retry while trade state is unverified after loading or confirming a trade; unrelated trade setups do not poll. Each section loads once on opening, and manual controls remain available at any time. A started STOP alarm continues until acknowledged or the trade is closed. NSE holidays are not yet determined by an exchange calendar.</p>
+  <p class="note">Normal automatic polling runs Monday–Friday from 09:00:00 inclusive to 15:40:00 exclusive IST (Asia/Kolkata). Dashboard and trade-monitor data poll every 2 seconds; charts, options, signals and market structure poll every 5 seconds. Outside this window, active-trade checks continue every 2 seconds until closure, and retry while trade state is unverified after loading or confirming a trade; unrelated trade setups do not poll. Each section loads once on opening, and manual controls remain available at any time. Chart timeframe changes and Refresh chart fetch immediately, including outside market hours. A started STOP alarm continues until acknowledged or the trade is closed. NSE holidays are not yet determined by an exchange calendar.</p>
 </main></body></html>
