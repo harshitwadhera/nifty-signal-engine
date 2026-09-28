@@ -3,14 +3,23 @@
   const format = v => v == null ? 'Unavailable' : typeof v === 'number'
     ? v.toLocaleString('en-IN', {maximumFractionDigits: 2}) : String(v);
   const stamp = v => v ? new Date(v).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}) + ' IST' : 'Waiting';
+  const sectionNodes = new WeakMap();
   function section(parent, label, rows) {
-    const details = document.createElement('details'), title = document.createElement('summary');
-    title.textContent = label; details.append(title);
-    const list = document.createElement('ul');
+    let sections = sectionNodes.get(parent);
+    if (!sections) { sections = new Map(); sectionNodes.set(parent, sections); }
+    if (!sections.has(label)) {
+      const details = document.createElement('details'), title = document.createElement('summary');
+      const list = document.createElement('ul');
+      title.textContent = label; details.append(title, list);
+      sections.set(label, {details, list});
+    }
+    // Keep the native disclosure state through successful and failed refreshes.
+    const {details, list} = sections.get(label);
+    list.replaceChildren();
     for (const text of rows.length ? rows : ['None']) {
       const item = document.createElement('li'); item.textContent = text; list.append(item);
     }
-    details.append(list); parent.append(details);
+    parent.append(details);
   }
   function paint(index, data) {
     const box = get(index + '-signal'); box.replaceChildren();
