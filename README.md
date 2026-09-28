@@ -60,7 +60,7 @@ Run one application process, without extra workers or auto-reload. Restart after
 With Node.js installed:
 
 ```powershell
-node --test tests/dashboard.test.cjs tests/structure.test.cjs tests/options.test.cjs tests/signals.test.cjs tests/trades.test.cjs
+node --test tests/*.test.cjs
 ```
 
 ## Single-server cloud deployment

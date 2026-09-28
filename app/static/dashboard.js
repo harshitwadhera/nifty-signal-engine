@@ -68,4 +68,4 @@ async function refresh() {
 }
 el('refresh').addEventListener('click', refresh);
 refresh();
-setInterval(refresh, 2000);
+setInterval(() => { if (window.marketAutoRefreshAllowed()) refresh(); }, 2000);

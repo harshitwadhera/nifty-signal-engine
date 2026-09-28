@@ -74,5 +74,5 @@
         evidence:[], contradictions:[], data_quality:{stale:true, blocking_reasons:['Signal observations unavailable; retrying.']}});
     } finally { busy = false; }
   }
-  refresh(); setInterval(refresh, 5000);
+  refresh(); setInterval(() => { if (window.marketAutoRefreshAllowed()) refresh(); }, 5000);
 })();
