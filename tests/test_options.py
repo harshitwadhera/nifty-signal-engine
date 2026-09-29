@@ -73,7 +73,10 @@ def test_expiry_strike_ce_pe_and_monthly_discovery(service):
     options, _, _ = service
     catalog = options.discovery
     assert catalog.get_expiries("NIFTY") == [date(2026, 9, 28), date(2026, 9, 30)]
-    assert catalog.selections("BANKNIFTY") == {"nearest": date(2026, 9, 28), "next": date(2026, 9, 30), "monthly": date(2026, 9, 30)}
+    choices = catalog.selections("BANKNIFTY")
+    assert {k: choices[k] for k in ("nearest", "next", "monthly")} == {
+        "nearest": date(2026, 9, 28), "next": date(2026, 9, 30), "monthly": date(2026, 9, 30)}
+    assert choices['analysis_expiry'] == date(2026, 9, 30)
     ce = catalog.get_option_contract("NIFTY", date(2026, 9, 28), 100, "CE")
     pe = catalog.get_option_contract("NIFTY", date(2026, 9, 28), 100, "PE")
     assert ce.instrument_token != pe.instrument_token and ce.lot_size == 25
@@ -421,14 +424,14 @@ def test_persisted_timestamp_follows_network_fetch(service):
     assert rows and all(datetime.fromisoformat(row[0])>=clock() for row in rows)
 
 
-def test_full_chain_persistence_nearest_only_and_index_separation(service):
+def test_full_chain_persistence_analysis_only_and_index_separation(service):
     options, _, _ = service
     options.response('NIFTY', date(2026, 9, 30))
     options.cycle(force=True)
     db = options.database.db
     groups = db.execute('''SELECT index_name, expiry, count(*), min(strike), max(strike)
         FROM option_chain_snapshots GROUP BY index_name, expiry ORDER BY index_name''').fetchall()
-    assert groups == [('BANKNIFTY', '2026-09-28', 42, 80, 120),
+    assert groups == [('BANKNIFTY', '2026-09-30', 42, 80, 120),
                       ('NIFTY', '2026-09-28', 42, 80, 120)]
     assert db.execute('SELECT count(*) FROM option_snapshots').fetchone()[0] == 2
     summary, rows = options.response('NIFTY')
@@ -486,12 +489,12 @@ def test_chain_storage_sanitizes_nonfinite_values(service, bad):
     assert saved == (None,) * len(fields)
 
 
-def test_chain_store_rejects_non_nearest_expiry(service):
+def test_chain_store_rejects_non_analysis_expiry(service):
     options, _, clock = service
     options.cycle(force=True)
     summary, rows = options.response('NIFTY', date(2026, 9, 30))
     options.store.save_chain(summary, rows, clock())
-    assert options.database.db.execute("SELECT count(*) FROM option_chain_snapshots WHERE expiry='2026-09-30'").fetchone()[0] == 0
+    assert options.database.db.execute("SELECT count(*) FROM option_chain_snapshots WHERE index_name='NIFTY' AND expiry='2026-09-30'").fetchone()[0] == 0
 
 
 def test_chain_minute_captures_fresh_stream_overlay_without_tick_writes(service):

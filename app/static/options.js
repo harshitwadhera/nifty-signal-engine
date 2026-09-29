@@ -41,7 +41,7 @@
     const selected = selector.value;
     selector.replaceChildren();
     for (const value of ['', ...(data.expiries || [])]) {
-      const option = document.createElement('option'); option.value = value; option.textContent = value || 'Nearest listed';
+      const option = document.createElement('option'); option.value = value; option.textContent = value || 'Automatic analysis expiry';
       selector.append(option);
     }
     selector.value = (data.expiries || []).includes(selected) ? selected : '';
@@ -52,7 +52,11 @@
     busy[index] = true;
     try {
       const expiry = get(index + '-options-expiry').value;
-      const response = await fetch('/api/options/' + index + (expiry ? '?expiry=' + encodeURIComponent(expiry) : ''), {signal: AbortSignal.timeout(15000)});
+      let response = await fetch('/api/options/' + index + (expiry ? '?expiry=' + encodeURIComponent(expiry) : ''), {signal: AbortSignal.timeout(15000)});
+      if (response.status === 404 && expiry && get(index + '-options-expiry').value === expiry) {
+        get(index + '-options-expiry').value = '';
+        response = await fetch('/api/options/' + index, {signal: AbortSignal.timeout(15000)});
+      }
       if (!response.ok) throw new Error();
       paint(index, await response.json());
     } catch {

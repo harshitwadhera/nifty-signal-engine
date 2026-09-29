@@ -32,8 +32,9 @@ def select_option(snapshot, direction, rows, config):
         return None
     now = instant(snapshot.as_of)
     expiry = snapshot.options.get('selected_expiry')
-    # Use only nearest currently selected expiry. No silent alternative expiry.
-    if not expiry or snapshot.options.get('expiry_selection', {}).get('nearest') != expiry:
+    # Require the exact expiry used for automatic scoring. Manual views and
+    # missing policy metadata cannot silently become a trade selection.
+    if not expiry or snapshot.options.get('expiry_selection', {}).get('analysis_expiry') != expiry:
         return None
     try:
         if datetime.combine(datetime.fromisoformat(expiry).date(), time(15, 30), IST) <= now:

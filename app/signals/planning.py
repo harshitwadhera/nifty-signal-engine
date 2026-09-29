@@ -4,6 +4,7 @@ from math import isfinite
 from .engine import SignalEngine, positive
 from .execution_models import EntryTrigger, ExecutionConfig, PlanningResult, SignalPlan, StructuralLevel, instant
 from .selection import select_option
+from .decision import gate
 
 
 def levels(data, side):
@@ -34,11 +35,17 @@ class SignalPlanner:
         self.engine = engine or SignalEngine()
         self.config = config or ExecutionConfig()
 
+    def entry_window_gate(self, as_of):
+        now = instant(as_of)
+        opened = now.weekday() < 5 and time(9, 15) <= now.time() < self.config.new_entry_cutoff
+        hours = f"09:15–{self.config.new_entry_cutoff:%H:%M} IST, weekdays (cutoff exclusive)"
+        return gate("entry_window", "New-entry window", opened, "Open" if opened else "Closed", hours,
+                    "Within new-entry window" if opened else "Outside new-entry window")
+
     def build(self, snapshot, contracts):
         def reject(reason):
             return PlanningResult('NO_TRADE', False, None, (reason,))
-        now = instant(snapshot.as_of)
-        if now.weekday() >= 5 or not time(9, 15) <= now.time() < self.config.new_entry_cutoff:
+        if not self.entry_window_gate(snapshot.as_of)["passed"]:
             return reject('Outside new-entry window')
         qualified = self.engine.decide(snapshot)
         if qualified.decision not in ('CALL', 'PUT'):

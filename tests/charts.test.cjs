@@ -77,6 +77,7 @@ test('automatic refresh merges only recent candles and keeps the chart bounded',
   h.calls.length = 0;
   const formingKey = h.bars().at(-1).getAttribute('data-start');
   initial.candles.at(-1).close = 999;
+  initial.candles.at(-1).high = 999; // Keep this incremental-update fixture a valid candle.
   await h.poll();
   assert.deepEqual(h.calls.map(c => c.url), [
     '/api/candles/NIFTY?interval=5m&limit=3', '/api/candles/BANKNIFTY?interval=5m&limit=3'

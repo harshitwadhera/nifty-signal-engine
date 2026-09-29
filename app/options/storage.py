@@ -42,13 +42,13 @@ class OptionsStore:
                 ON option_chain_snapshots(snapshot_minute, index_name)''')
 
     def save_chain(self, summary, rows, now):
-        """Atomically store one full nearest-expiry observation, never raw tick events.
+        """Atomically store one full analysis-expiry observation, never raw tick events.
 
         Keep the first observation immutable on retries/restarts. Do not fill missing
         fields from another minute: NULL and stale flags preserve replay fidelity.
         """
         expiry = summary.get("selected_expiry")
-        if not expiry or expiry != summary.get("expiry_selection", {}).get("nearest") or not rows:
+        if not expiry or expiry != summary.get("expiry_selection", {}).get("analysis_expiry") or not rows:
             return
         now = local(now)
         key = (summary["index"], expiry, now.replace(second=0, microsecond=0).isoformat())

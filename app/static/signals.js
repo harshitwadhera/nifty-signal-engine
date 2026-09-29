@@ -3,6 +3,52 @@
   const format = v => v == null ? 'Unavailable' : typeof v === 'number'
     ? v.toLocaleString('en-IN', {maximumFractionDigits: 2}) : String(v);
   const stamp = v => v ? new Date(v).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}) + ' IST' : 'Waiting';
+  const expiryDate = v => v ? new Date(v + 'T00:00:00+05:30').toLocaleDateString('en-GB',
+    {day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata'}) : 'Unavailable';
+  const categoryLabels = {price_trend: 'Price / Trend', options_positioning: 'Options',
+    breadth_constituents: 'Breadth', volatility: 'VIX', futures_structure: 'Futures'};
+  function table(parent, caption, headings, rows) {
+    const wrapper = document.createElement('div'), grid = document.createElement('table');
+    wrapper.className = 'signal-table';
+    const title = document.createElement('caption'); title.textContent = caption; grid.append(title);
+    const head = document.createElement('thead'), header = document.createElement('tr');
+    for (const label of headings) {
+      const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = label; header.append(cell);
+    }
+    head.append(header); grid.append(head);
+    const body = document.createElement('tbody');
+    for (const values of rows) {
+      const row = document.createElement('tr');
+      for (const value of values) {
+        const cell = document.createElement('td'); cell.textContent = format(value); row.append(cell);
+      }
+      body.append(row);
+    }
+    grid.append(body); wrapper.append(grid); parent.append(wrapper);
+  }
+  function qualification(parent, data) {
+    const selection = data.expiry_selection || {}, policy = selection.analysis_expiry_policy || {};
+    const expiry = document.createElement('p'); expiry.className = 'signal-expiry';
+    expiry.textContent = `Analysis expiry: ${expiryDate(selection.analysis_expiry)}\nPolicy: ${format(policy.label)}\nReason: ${format(policy.reason)}`;
+    parent.append(expiry);
+    const current = data.current_qualification || data;
+    const categories = Object.entries(current.category_scores || {}).map(([name, score]) =>
+      [categoryLabels[name] || name, score.direction, score.bullish_points, score.bearish_points,
+        `${format(score.available_weight)} / ${format(score.maximum_weight)}`]);
+    categories.push(['TOTAL', '', current.bullish_score, current.bearish_score, '']);
+    table(parent, 'Current category weightage', ['Category', 'Direction', 'Bull', 'Bear', 'Available / Max'], categories);
+    const gates = data.qualification_gates || [];
+    table(parent, data.decision === 'NO_TRADE' ? 'WHY NO TRADE' : 'CURRENT QUALIFICATION',
+      ['Status', 'Gate', 'Observation / Requirement'], gates.length ? gates.map(g =>
+        [g.status, g.label, [g.actual == null ? null : format(g.actual),
+          g.required == null ? null : `${format(g.required)} required`].filter(Boolean).join(' / ') +
+          (g.detail ? ` · ${g.detail}` : '')]) : [['INFO', 'Qualification', 'Waiting for backend gate details']]);
+    const note = document.createElement('p'); note.className = 'note';
+    note.textContent = 'Scores describe evidence on a 100-point budget. Passing a gate does not predict profitability.';
+    if (data.score_basis === 'candidate_creation') note.textContent +=
+      ` Tables show current observations; the active signal and scores below were recorded at creation (expiry: ${expiryDate(data.score_expiry_selection?.analysis_expiry)}).`;
+    parent.append(note);
+  }
   function section(parent, label, rows) {
     const details = document.createElement('details'), title = document.createElement('summary');
     title.textContent = label; details.append(title);
@@ -18,6 +64,7 @@
     badge.className = data.decision === 'NO_TRADE' ? 'signal-neutral' : 'signal-direction';
     badge.textContent = (data.decision || 'NO_TRADE').replaceAll('_', ' ');
     box.append(badge);
+    qualification(box, data);
     const record = data.record, plan = record?.plan, outcome = record?.outcome;
     const trigger = plan?.entry_trigger, option = plan?.option;
     const rows = [
