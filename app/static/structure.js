@@ -14,6 +14,7 @@
       ['Previous day low', metrics.previous_day_low], ['Previous day close', metrics.previous_day_close],
       ['Opening range high', metrics.opening_range_high], ['Opening range low', metrics.opening_range_low],
       ['Spot vs opening range', metrics.opening_range_state],
+      ['Confirmed swing high', metrics.recent_swing_high], ['Confirmed swing low', metrics.recent_swing_low],
       ...['5m', '15m', '30m'].flatMap(interval => [
         [interval + ' spot EMA9', metrics[interval]?.ema9], [interval + ' spot EMA20', metrics[interval]?.ema20]])
     ];

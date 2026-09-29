@@ -31,6 +31,18 @@ test('incomplete options visibly marked stale',async()=>{
   const {elements}=await render({stale:true,coverage:{expected_contracts:100,received_contracts:20,percent:20}});
   assert.match(elements['banknifty-options'].children[0].textContent,/INCOMPLETE/);
 });
+
+test('analysis shows manual versus automatic expiry context and existing writing/unwinding metrics',async()=>{
+  const {elements,calls}=await render({selected_expiry:'2026-09-29',expiry_selection:{analysis_expiry:'2026-10-06',
+    nearest:'2026-09-29',monthly:'2026-09-29',analysis_expiry_policy:{label:'Next-week expiry',reason:'Current-week expiry skipped'}},
+    call_writing_zones:[{strike:25000,oi_change_session:1234}],put_writing_zones:[{strike:24800,oi_change_session:5678}],
+    call_unwinding_zones:[{strike:25200,value:-900}],put_unwinding_zones:[{strike:24600,value:-800}]});
+  const fields=elements['nifty-options'].children[1].children.map(n=>n.textContent);
+  for(const value of ['2026-09-29','2026-10-06','Automatic analysis expiry','Next-week expiry','Current-week expiry skipped',
+    'Call writing zones (session)','Put writing zones (session)','25,000 (1,234)','24,800 (5,678)',
+    'Call unwinding zones (session)','Put unwinding zones (session)','25,200 (-900)','24,600 (-800)']) assert.ok(fields.includes(value),value);
+  assert.deepEqual(calls,['/api/options/nifty','/api/options/banknifty']);
+});
 test('expiry selection requests selected expiry',async()=>{
   const {elements,calls}=await render({stale:true,expiries:['2026-09-28']});
   elements['nifty-options-expiry'].value='2026-09-28';

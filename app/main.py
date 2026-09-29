@@ -328,6 +328,10 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     def dashboard():
         return FileResponse(ROOT / "app" / "static" / "index.html")
 
+    @app.get("/analysis", include_in_schema=False)
+    def analysis():
+        return FileResponse(ROOT / "app" / "static" / "analysis.html")
+
     return app
 
 
