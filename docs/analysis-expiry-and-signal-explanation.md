@@ -10,8 +10,11 @@ come from discovered NFO contracts. The clock must be timezone-aware and is
 converted to `Asia/Kolkata`. Expired contracts are excluded, including today's
 contracts at or after 15:30 IST.
 
-- NIFTY uses the second active listed expiry on Monday and Tuesday, and the first
-  active listed expiry on other days. A missing second expiry returns unavailable.
+- NIFTY uses the second active listed expiry on Monday and Tuesday only when the
+  nearest listing is still in the current IST calendar week (ISO year and week).
+  Otherwise it uses the first active listed expiry. This retains the following
+  week's contract after a holiday-shifted Monday expiry disappears. A required
+  second expiry that is missing returns unavailable.
 - BANKNIFTY uses option expiry dates that also occur in the same index's listed
   futures metadata. This excludes weekly options without guessing month-end dates.
   It uses the nearest such monthly expiry until the final zero or one weekday
@@ -29,14 +32,17 @@ Illustrative listed-metadata examples, during market hours:
 | NIFTY | Monday 28 Sep 2026 | 29 Sep 2026 | 06 Oct 2026 |
 | NIFTY | Tuesday 29 Sep 2026 | 29 Sep 2026 | 06 Oct 2026 |
 | NIFTY | Wednesday 30 Sep through Friday 02 Oct | 06 Oct 2026 | 06 Oct 2026 |
+| NIFTY | Monday 28 Sep, with holiday-shifted expiry that day | 28 Sep 2026 | 06 Oct 2026 |
+| NIFTY | Tuesday 29 Sep, after that Monday expiry is removed | 06 Oct 2026 | 06 Oct 2026 |
 | BANKNIFTY | Wednesday 16 Sep 2026 | Monthly 29 Sep 2026 | 29 Sep 2026 |
 | BANKNIFTY | Monday 28 Sep / Tuesday 29 Sep | Monthly 29 Sep 2026 | 27 Oct 2026 |
 | BANKNIFTY | Wednesday 30 Sep 2026 | Monthly 27 Oct 2026 | 27 Oct 2026 |
 | BANKNIFTY | Friday 25 Sep, if metadata lists 28 Sep monthly | Monthly 28 Sep 2026 | Next listed monthly |
 
-These dates are test examples, not a hardcoded exchange schedule. For NIFTY the
-literal Monday/Tuesday rule still skips the first active listing after an expiry
-has been removed at the close.
+These dates are test examples, not a hardcoded exchange schedule. After the current
+week's NIFTY expiry is removed at 15:30 IST, the following week's nearest listing is
+retained, including later that day. Policy metadata changes from
+`NIFTY_NEXT_WEEK_EXPIRY` to `NIFTY_NEAREST_EXPIRY` while the analysis expiry stays the same.
 
 ## Consistency and manual inspection
 
@@ -154,12 +160,21 @@ Passing a gate is not presented as a profitability prediction.
 
 ## Validation and focused review
 
+The [PR #4 review](https://github.com/harshitwadhera/nifty-signal-engine/pull/4#pullrequestreview-5352612226)
+identified a second rollover after a holiday-shifted Monday expiry disappeared.
+The fix limits Monday/Tuesday skipping to a nearest listing in the current IST
+week. Regression tests cover Monday before/at the close, Tuesday, cached and
+refreshed metadata, a single remaining expiry, UTC/IST boundaries, and ISO weeks
+spanning a year. An OptionsService regression verifies unchanged analysis expiry
+across REST refresh, subscriptions, ATM quotes, summary metrics, and persistence
+on Monday and Tuesday without additional quote batches.
+
 Final required suite runs on the implementation:
 
 | Command | Passed | Failed | Skipped | Duration |
 | --- | ---: | ---: | ---: | ---: |
-| `node --test tests/*.test.cjs` | 92 | 0 | 0 | 480.1202 ms |
-| `.venv/Scripts/python.exe -m pytest -q` | 367 | 0 | 0 | 36.57 s |
+| `node --test tests/*.test.cjs` | 92 | 0 | 0 | 533.6259 ms |
+| `.venv/Scripts/python.exe -m pytest -q` | 379 | 0 | 0 | 36.68 s |
 
 Python used the repository's Python 3.12.14 virtual environment. Pytest emitted one
 existing Starlette/httpx deprecation warning. An existing chart test had an invalid

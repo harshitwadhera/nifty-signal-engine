@@ -81,8 +81,8 @@ class OptionDiscovery:
         """One automatic policy, evaluated against an aware IST observation.
 
         Matching listed futures identify monthlies; never guess from month-end
-        or symbol spelling. Weekdays measure the final 0–1 session window; the
-        actual listed date handles an expiry moved for an exchange holiday.
+        or symbol spelling. NIFTY skips only current-week listings; BANKNIFTY
+        uses the final 0–1 weekday window before its actual monthly expiry.
         """
         if index not in ("NIFTY", "BANKNIFTY"):
             raise ValueError("Unsupported index")
@@ -93,7 +93,12 @@ class OptionDiscovery:
         choices = {"nearest": expiries[0] if expiries else None, "next": expiries[1] if len(expiries) > 1 else None,
                    "monthly": monthly[0] if monthly else None, "next_monthly": monthly[1] if len(monthly) > 1 else None}
         if index == "NIFTY":
-            rollover = now.weekday() in (0, 1)
+            nearest = choices["nearest"]
+            # Once a holiday-shifted expiry has expired, the new nearest may
+            # already be next week's contract. Do not skip it a second time.
+            # ISO year + week also handles weeks spanning a calendar year.
+            current_week = nearest is not None and nearest.isocalendar()[:2] == now.date().isocalendar()[:2]
+            rollover = now.weekday() in (0, 1) and current_week
             selected = choices["next" if rollover else "nearest"]
             code = "NIFTY_NEXT_WEEK_EXPIRY" if rollover else "NIFTY_NEAREST_EXPIRY"
             label = "Next-week expiry" if rollover else "Nearest listed expiry"

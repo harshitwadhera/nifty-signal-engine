@@ -53,6 +53,51 @@ def test_nifty_week_is_stable(day, expected, policy):
     assert result['analysis_expiry_policy']['timezone'] == 'Asia/Kolkata'
 
 
+@pytest.mark.parametrize('refresh_metadata', [False, True])
+@pytest.mark.parametrize('next_expiry', ['2026-10-05', '2026-10-06'])
+def test_nifty_monday_shifted_expiry_stays_stable_after_close_and_on_tuesday(refresh_metadata, next_expiry):
+    discovery = catalog('2026-09-28T10:00:00+05:30', ['2026-09-28', next_expiry, '2026-10-13'])
+    for stamp, nearest, policy in [
+        ('2026-09-28T10:00:00+05:30', '2026-09-28', 'NIFTY_NEXT_WEEK_EXPIRY'),
+        ('2026-09-28T15:29:59+05:30', '2026-09-28', 'NIFTY_NEXT_WEEK_EXPIRY'),
+        ('2026-09-28T15:30:00+05:30', next_expiry, 'NIFTY_NEAREST_EXPIRY'),
+        ('2026-09-28T20:00:00+00:00', next_expiry, 'NIFTY_NEAREST_EXPIRY'),  # Tuesday IST.
+        ('2026-09-29T10:00:00+05:30', next_expiry, 'NIFTY_NEAREST_EXPIRY'),
+        ('2026-09-30T10:00:00+05:30', next_expiry, 'NIFTY_NEAREST_EXPIRY'),
+    ]:
+        discovery.resolver.clock.return_value = datetime.fromisoformat(stamp)
+        if refresh_metadata:
+            # Model the expired Monday contracts disappearing from broker metadata.
+            discovery.resolver.find.return_value = [r for r in discovery.resolver.find.return_value
+                                                    if discovery._active(r['expiry'])]
+            discovery.refresh(Mock())
+        result = discovery.selections('NIFTY')
+        assert result['nearest'] == date.fromisoformat(nearest)
+        assert result['analysis_expiry'] == date.fromisoformat(next_expiry), stamp
+        assert result['analysis_expiry_policy']['code'] == policy
+        assert result['analysis_expiry_policy']['available'] is True
+
+
+@pytest.mark.parametrize('day', ['28', '29'])
+@pytest.mark.parametrize('expiries', [['2026-10-06'], ['2026-10-06', '2026-10-13']])
+def test_nifty_does_not_skip_a_nearest_expiry_already_in_the_following_week(day, expiries):
+    result = catalog(f'2026-09-{day}T10:00:00+05:30', expiries).selections('NIFTY')
+    assert result['analysis_expiry'] == date(2026, 10, 6)
+    assert result['analysis_expiry_policy']['code'] == 'NIFTY_NEAREST_EXPIRY'
+    assert result['analysis_expiry_policy']['available'] is True
+
+
+@pytest.mark.parametrize('stamp,expiries,expected,policy', [
+    ('2026-12-28T10:00:00+05:30', ['2026-12-29', '2027-01-05'], '2027-01-05', 'NIFTY_NEXT_WEEK_EXPIRY'),
+    ('2026-12-29T15:30:00+05:30', ['2026-12-29', '2027-01-05', '2027-01-12'], '2027-01-05', 'NIFTY_NEAREST_EXPIRY'),
+    ('2026-12-28T10:00:00+05:30', ['2027-01-01', '2027-01-05'], '2027-01-05', 'NIFTY_NEXT_WEEK_EXPIRY'),
+])
+def test_nifty_current_week_detection_handles_year_boundaries(stamp, expiries, expected, policy):
+    result = catalog(stamp, expiries).selections('NIFTY')
+    assert result['analysis_expiry'] == date.fromisoformat(expected)
+    assert result['analysis_expiry_policy']['code'] == policy
+
+
 @pytest.mark.parametrize('day', ['28', '29'])
 def test_nifty_missing_next_is_unavailable(day):
     result = catalog(f'2026-09-{day}T10:00:00+05:30', ['2026-09-29']).selections('NIFTY')
@@ -79,8 +124,10 @@ def test_policy_rejects_naive_clock():
 def test_expired_dates_excluded_without_metadata_refresh():
     discovery = catalog('2026-09-29T15:29:59+05:30', ['2026-09-22', '2026-09-29', '2026-10-06', '2026-10-13'])
     assert date(2026, 9, 22) not in discovery.get_expiries('NIFTY')
+    assert discovery.selections('NIFTY')['analysis_expiry'] == date(2026, 10, 6)
     discovery.resolver.clock.return_value += timedelta(seconds=1)
     assert discovery.selections('NIFTY')['nearest'] == date(2026, 10, 6)
+    assert discovery.selections('NIFTY')['analysis_expiry'] == date(2026, 10, 6)
     assert discovery.chain('NIFTY', date(2026, 9, 29)) == []
 
 
@@ -173,6 +220,26 @@ def test_auto_inspection_does_not_cancel_internal_contract_observations(service)
     assert client.quote.call_count == 6
     assert options.requested['NIFTY'] == date(2026, 9, 30)
     assert 'NIFTY' not in options.inspected
+
+
+def test_shifted_monday_expiry_keeps_rest_subscriptions_and_summary_on_same_expiry_tuesday(service):
+    options, client, clock = service
+    client.instruments.return_value = [dict(r, expiry=date(2026, 10, 6)) if r['expiry'] == date(2026, 9, 30)
+                                       else r for r in client.instruments.return_value]
+    options._context = lambda index: (100, None)
+    for day in (28, 29):
+        clock.return_value = datetime(2026, 9, day, 10, tzinfo=IST)
+        options.session.save('dummy-session')
+        options.cycle(force=True)
+        summary, rows = options.response('NIFTY')
+        assert summary['selected_expiry'] == summary['expiry_selection']['analysis_expiry'] == '2026-10-06'
+        assert not summary['stale'] and summary['pcr_oi'] == 2
+        assert {r['expiry'] for r in rows} == {'2026-10-06'}
+        assert summary['atm_ce']['expiry'] == summary['atm_pe']['expiry'] == '2026-10-06'
+        subscribed = options.stream.set_option_contracts.call_args.args[0]
+        assert {c.expiry for c in subscribed if c.index == 'NIFTY'} == {date(2026, 10, 6)}
+    assert client.quote.call_count == 4  # One batch per automatic index on each day.
+    assert options.database.db.execute('SELECT DISTINCT expiry FROM option_chain_snapshots').fetchall() == [('2026-10-06',)]
 
 
 def test_unavailable_policy_does_not_reuse_old_or_manual_chain(service):
