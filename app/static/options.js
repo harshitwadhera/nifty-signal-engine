@@ -3,7 +3,7 @@
   const format = value => value == null ? 'Unavailable' : typeof value === 'number'
     ? value.toLocaleString('en-IN', {maximumFractionDigits: 2}) : String(value);
   const stamp = value => value ? new Date(value).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}) + ' IST' : 'Unavailable';
-  const zones = rows => rows?.length ? rows.map(r => format(r.strike) + ' (' + format(r.value) + ')').join(', ') : 'Unavailable';
+  const zones = (rows, field = 'value') => rows?.length ? rows.map(r => format(r.strike) + ' (' + format(r[field]) + ')').join(', ') : 'Unavailable';
   function paint(index, data) {
     const container = get(index + '-options');
     container.replaceChildren();
@@ -11,12 +11,20 @@
     badge.className = data.stale ? 'stale' : 'live';
     badge.textContent = data.stale ? 'STALE / INCOMPLETE / MARKET CLOSED' : 'FRESH SNAPSHOT';
     container.append(badge);
+    const selection = data.expiry_selection || {}, policy = selection.analysis_expiry_policy || {};
     const rows = [
-      ['Selected expiry', data.selected_expiry], ['Spot', data.spot], ['Expiry-matched future', data.futures],
+      ['Selected expiry', data.selected_expiry], ['Automatic analysis expiry', selection.analysis_expiry],
+      ['Analysis policy', policy.label], ['Analysis reason', policy.reason],
+      ['Nearest listed expiry', selection.nearest], ['Nearest monthly expiry', selection.monthly],
+      ['Spot', data.spot], ['Expiry-matched future', data.futures],
       ['Front-month future', data.front_month_futures], ['ATM', data.atm],
       ['Full-expiry OI PCR', data.pcr_oi], ['Full-expiry volume PCR', data.pcr_volume], ['Max pain', data.max_pain],
       ['Call OI wall', data.call_oi_wall], ['Put OI wall', data.put_oi_wall],
-      ['Top call OI additions (session)', zones(data.call_oi_additions)], ['Top put OI additions (session)', zones(data.put_oi_additions)]
+      ['Top call OI additions (session)', zones(data.call_oi_additions)], ['Top put OI additions (session)', zones(data.put_oi_additions)],
+      ['Call writing zones (session)', zones(data.call_writing_zones, 'oi_change_session')],
+      ['Put writing zones (session)', zones(data.put_writing_zones, 'oi_change_session')],
+      ['Call unwinding zones (session)', zones(data.call_unwinding_zones)],
+      ['Put unwinding zones (session)', zones(data.put_unwinding_zones)]
     ];
     for (const [kind, option] of [['CE', data.atm_ce], ['PE', data.atm_pe]]) {
       rows.push(['ATM ' + kind + ' LTP', option?.ltp], ['ATM ' + kind + ' OI', option?.oi],

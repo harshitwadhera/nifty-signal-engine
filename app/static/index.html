@@ -3,32 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>NIFTY market dashboard</title>
+  <title>Trading Dashboard · NIFTY Signal Engine</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/market_hours.js" defer></script>
   <script src="/static/dashboard.js" defer></script>
   <script src="/static/charts.js" defer></script>
-  <script src="/static/structure.js" defer></script>
-  <script src="/static/options.js" defer></script>
   <script src="/static/signals.js" defer></script>
   <script src="/static/trades.js" defer></script>
 </head>
 <body><main>
-  <p class="eyebrow">PHASE 5 · READ-ONLY MARKET & SIGNAL ANALYSIS</p>
-  <h1>Market overview</h1>
+  <nav class="page-nav" aria-label="Main navigation">
+    <a href="/" aria-current="page">Trade Dashboard</a>
+    <a href="/analysis" target="_blank" rel="noopener" aria-label="Market Analysis (opens in a new tab)">Market Analysis <span aria-hidden="true">↗</span></a>
+  </nav>
+  <header class="page-header">
+    <h1>Trading Dashboard</h1>
+    <p class="note">Live market, chart, signal qualification and manual trade monitoring.</p>
+  </header>
+  <p class="note monitoring-note">Market Analysis opens in a new tab. Keep this dashboard open with sound armed for browser STOP alarms.</p>
+  <div class="connection-panel">
+  <div class="connection-status">
   <p>ZERODHA: <strong id="status">CHECKING…</strong></p>
   <p>MARKET FEED: <strong id="feed">DISCONNECTED</strong> · <span id="freshness">STALE / MARKET CLOSED</span></p>
   <p class="note">WebSocket connectivity: <span id="socket">DISCONNECTED</span></p>
+  </div>
+  <div class="connection-controls">
   <a href="/kite/login">Connect to Zerodha</a><button id="refresh" type="button">Refresh</button>
+  </div>
+  </div>
   <p id="message" role="status" aria-live="polite"></p>
-  <section aria-label="Index values">
+  <section class="market-overview" aria-label="Index values">
     <article><h2>NIFTY 50</h2><p id="nifty">—</p><div class="note">Last tick: <time id="nifty-tick">—</time></div><div id="nifty-source" class="note">Waiting for data</div></article>
     <article><h2>BANK NIFTY</h2><p id="bank">—</p><div class="note">Last tick: <time id="bank-tick">—</time></div><div id="bank-source" class="note">Waiting for data</div></article>
     <article><h2>INDIA VIX</h2><p id="vix">—</p><div class="note">Last tick: <time id="vix-tick">—</time></div><div id="vix-source" class="note">Waiting for data</div></article>
   </section>
   <p>Last tick received: <time id="updated">—</time></p>
   <h2 class="section-title">Market Charts</h2>
+  <details class="chart-help"><summary>Chart controls and data notes</summary>
   <p class="note">Latest 100 candles. Times are IST (Asia/Kolkata); gaps between sessions are compressed. Use Zoom +/− or the mouse wheel to zoom, drag horizontally to pan, and Reset view to return to the latest candles. Hover, tap or use arrow keys to inspect OHLC. Amber outlines indicate partial coverage; blue dots indicate recovered or mixed history. Forming candles remain visible.</p>
+  </details>
   <div class="chart-grid">
     <article class="market-chart" aria-labelledby="nifty-chart-title">
       <div class="chart-heading"><h2 id="nifty-chart-title">NIFTY</h2><span id="nifty-chart-price" class="chart-price">—</span></div>
@@ -47,24 +60,11 @@
       <p id="banknifty-chart-status" class="chart-status" role="status"></p>
     </article>
   </div>
-  <h2 class="section-title">Signal observations</h2>
+  <h2 class="section-title">Signal / Trade Setup</h2>
   <p class="note">NO TRADE is a normal result. Candidates need confirmation. These are observed underlying plans, not orders or fills; confidence is an evidence score, not a success probability.</p>
   <div class="structure-grid signal-grid">
     <article><h2>NIFTY signal</h2><div id="nifty-trade"></div><div id="nifty-signal" aria-live="polite">Waiting for observations…</div></article>
     <article><h2>BANK NIFTY signal</h2><div id="banknifty-trade"></div><div id="banknifty-signal" aria-live="polite">Waiting for observations…</div></article>
   </div>
-  <h2 class="section-title">Market Structure</h2>
-  <p id="structure-status" role="status">Loading candle history…</p>
-  <div class="structure-grid">
-    <article><h2>NIFTY</h2><div id="nifty-structure"></div></article>
-    <article><h2>BANK NIFTY</h2><div id="banknifty-structure"></div></article>
-  </div>
-  <p class="note">Day levels, opening range and EMAs use spot prices. VWAP uses the displayed futures contract only. Observed-volume VWAP is a sampled estimate since observation began; exchange-session VWAP includes the full session. Missing or warming-up metrics display Unavailable. These are descriptive metrics, not trading recommendations.</p>
-  <h2 class="section-title">Options Intelligence</h2>
-  <p class="note">Full-expiry metrics use REST snapshots. ATM details can use newer streaming quotes. OI changes are measured from the first session observation; previous-close OI is shown separately. OI walls and max pain are descriptive levels, not guaranteed support/resistance or trade recommendations.</p>
-  <div class="structure-grid">
-    <article><h2>NIFTY Options</h2><label>Expiry <select id="nifty-options-expiry"><option value="">Automatic analysis expiry</option></select></label><div id="nifty-options"></div></article>
-    <article><h2>BANKNIFTY Options</h2><label>Expiry <select id="banknifty-options-expiry"><option value="">Automatic analysis expiry</option></select></label><div id="banknifty-options"></div></article>
-  </div>
-  <p class="note">Normal automatic polling runs Monday–Friday from 09:00:00 inclusive to 15:40:00 exclusive IST (Asia/Kolkata). Dashboard and trade-monitor data poll every 2 seconds; charts, options, signals and market structure poll every 5 seconds. Outside this window, active-trade checks continue every 2 seconds until closure, and retry while trade state is unverified after loading or confirming a trade; unrelated trade setups do not poll. Each section loads once on opening, and manual controls remain available at any time. Chart timeframe changes and Refresh chart fetch immediately, including outside market hours. A started STOP alarm continues until acknowledged or the trade is closed. NSE holidays are not yet determined by an exchange calendar.</p>
+  <p class="note">Normal automatic polling runs Monday–Friday from 09:00:00 inclusive to 15:40:00 exclusive IST (Asia/Kolkata). Dashboard and trade-monitor data poll every 2 seconds; charts and signals poll every 5 seconds. Outside this window, active-trade checks continue every 2 seconds until closure, and retry while trade state is unverified after loading or confirming a trade; unrelated trade setups do not poll. Each section loads once on opening, and manual controls remain available at any time. Chart timeframe changes and Refresh chart fetch immediately, including outside market hours. A started STOP alarm continues until acknowledged or the trade is closed while this page remains open. NSE holidays are not yet determined by an exchange calendar.</p>
 </main></body></html>

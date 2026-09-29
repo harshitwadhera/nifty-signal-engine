@@ -26,6 +26,9 @@ test('structure panel distinguishes spot, futures, VWAP and missing metrics', as
   const fields = elements['nifty-structure'].children[1].children.map(n => n.textContent);
   assert.ok(fields.includes('Futures VWAP'));
   assert.ok(fields.includes('Spot day high'));
+  assert.ok(fields.includes('Confirmed swing high'));
+  assert.equal(fields[fields.indexOf('Confirmed swing high')+1],'Unavailable');
+  assert.equal(fields[fields.indexOf('Confirmed swing low')+1],'Unavailable');
   assert.ok(fields.includes('Unavailable'));
   assert.ok(fields.includes('<script>never executable</script>'));
   assert.equal(elements['structure-status'].textContent, 'History: ready');

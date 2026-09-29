@@ -41,3 +41,37 @@ select{background:#101827;color:#e6edf7;border:1px solid #528ac7;border-radius:6
 .signal-grid article{min-width:0}.signal-expiry{white-space:pre-line;line-height:1.6}.signal-table{overflow-x:auto;margin:16px 0}.signal-table table{width:100%;border-collapse:collapse;font-size:.75rem;font-variant-numeric:tabular-nums}.signal-table caption{text-align:left;font-size:.9rem;font-weight:700;padding:8px 0}.signal-table th,.signal-table td{text-align:left;padding:8px 4px;border-bottom:1px solid #35455b;vertical-align:top;overflow-wrap:anywhere}.signal-table th{color:#acbfd7}.signal-table td:first-child{font-weight:600}
 /* Manual journal controls are separate from signal observations. */
 .trade-box{border:1px solid #64748b;border-radius:8px;padding:14px;margin-bottom:20px}.trade-box h3{margin-top:0}.trade-paused{background:#fff3cd;color:#664d03;padding:10px}.trade-stop{background:#991b1b;color:white;border:3px solid #ef4444;padding:12px;margin:10px 0;font-weight:bold}.trade-target{background:#dbeafe;color:#1e3a8a;padding:12px;margin:10px 0}dialog{max-width:560px;width:90%;border:1px solid #64748b;border-radius:10px;padding:20px}dialog::backdrop{background:#0008}dialog label{display:block;margin:10px 0}dialog input{display:block;width:95%;padding:8px}button{cursor:pointer;margin:4px}button:disabled{opacity:.6;cursor:wait}
+
+/* Shared navigation and responsive layouts for the two static pages. */
+main{margin:24px auto}
+.page-nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px}
+.page-nav a{margin:0;min-height:44px;box-sizing:border-box}
+.page-nav a[aria-current="page"]{background:#295781;border-color:#93c5fd;font-weight:700}
+.page-nav a:focus-visible,button:focus-visible,select:focus-visible{outline:2px solid #93c5fd;outline-offset:3px}
+.page-header h1{font-size:clamp(1.8rem,5vw,2.6rem);margin:0}
+.page-header p{margin:8px 0}
+.chart-help{margin:12px 0 18px;color:#acbfd7;font-size:.85rem}.chart-help summary{cursor:pointer;padding:12px 0}
+.monitoring-note{border-left:3px solid #528ac7;padding-left:12px}
+.connection-panel{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.connection-status p{margin:6px 0;font-size:.85rem}
+.connection-controls{display:flex;gap:8px;flex-wrap:wrap}
+.connection-controls a,.connection-controls button{margin:0}
+.market-overview{margin:16px 0;grid-template-columns:repeat(3,minmax(0,1fr))}
+.market-overview article{padding:14px;min-width:0}
+.market-overview h2{margin:0 0 6px}.market-overview article p{font-size:1.6rem;margin:6px 0}
+.market-overview .note{overflow-wrap:anywhere}
+.structure-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.structure-grid article{min-width:0}
+.structure-grid dl{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.structure-grid dt{overflow-wrap:anywhere}
+.signal-table{max-width:100%}.signal-table table{min-width:360px;font-size:.8rem}
+a,button,select,input{box-sizing:border-box;max-width:100%}
+button,select,.connection-controls a{min-height:44px}
+button{white-space:normal;overflow-wrap:anywhere}
+dialog{box-sizing:border-box;max-width:min(560px,calc(100% - 32px))}
+@media(max-width:650px){
+  main{margin:16px auto;padding:16px}
+  .market-overview,.structure-grid{grid-template-columns:minmax(0,1fr)}
+  .structure-grid article{padding:16px}
+  .section-title{margin-top:28px}
+}
