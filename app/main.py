@@ -235,7 +235,7 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
 
     def option_response(index, expiry, window):
         try:
-            return options.response(index.upper(), expiry, window)
+            return options.response(index.upper(), expiry, window, inspection=True)
         except ValueError:
             raise AppError(404, "expiry_not_listed", "Expiry is not currently listed for this index.") from None
 
@@ -254,6 +254,7 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
         summary, rows = option_response(index, expiry, 10)
         filtered = [r for r in rows if (strike_min is None or r["strike"] >= strike_min) and (strike_max is None or r["strike"] <= strike_max)]
         return {"index": summary["index"], "expiry": summary["selected_expiry"],
+                "expiry_selection": summary.get("expiry_selection", {}),
                 "last_stream_tick_at": summary["last_stream_tick_at"],
                 "last_full_chain_refresh_at": summary["last_full_chain_refresh_at"],
                 "stale": summary["stale"], "coverage": summary["coverage"],

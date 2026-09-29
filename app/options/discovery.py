@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from math import isfinite
 from threading import RLock
 
@@ -66,8 +66,8 @@ class OptionDiscovery:
         with self.lock:
             return sorted((c for c in self.contracts if c.index == index and c.expiry == expiry and self._active(c.expiry)), key=lambda c: (c.strike, c.option_type))
 
-    def _active(self, expiry):
-        now = local(self.resolver.clock())
+    def _active(self, expiry, now=None):
+        now = now or local(self.resolver.clock())
         return expiry > now.date() or (expiry == now.date() and now.time() < time(15, 30))
 
     def get_expiries(self, index):
@@ -78,11 +78,44 @@ class OptionDiscovery:
         return next((c for c in self.chain(index, expiry) if c.strike == strike and c.option_type == option_type), None)
 
     def selections(self, index):
-        expiries = self.get_expiries(index)
+        """One automatic policy, evaluated against an aware IST observation.
+
+        Matching listed futures identify monthlies; never guess from month-end
+        or symbol spelling. Weekdays measure the final 0–1 session window; the
+        actual listed date handles an expiry moved for an exchange holiday.
+        """
+        if index not in ("NIFTY", "BANKNIFTY"):
+            raise ValueError("Unsupported index")
+        now = local(self.resolver.clock())
         with self.lock:
+            expiries = sorted({c.expiry for c in self.contracts if c.index == index and self._active(c.expiry, now)})
             monthly = sorted({f["expiry"] for f in self.futures if f["name"] == index and f["expiry"] in expiries})
-        return {"nearest": expiries[0] if expiries else None, "next": expiries[1] if len(expiries) > 1 else None,
-                "monthly": monthly[0] if monthly else None}
+        choices = {"nearest": expiries[0] if expiries else None, "next": expiries[1] if len(expiries) > 1 else None,
+                   "monthly": monthly[0] if monthly else None, "next_monthly": monthly[1] if len(monthly) > 1 else None}
+        if index == "NIFTY":
+            rollover = now.weekday() in (0, 1)
+            selected = choices["next" if rollover else "nearest"]
+            code = "NIFTY_NEXT_WEEK_EXPIRY" if rollover else "NIFTY_NEAREST_EXPIRY"
+            label = "Next-week expiry" if rollover else "Nearest listed expiry"
+            reason = ("Current-week expiry skipped for Monday/Tuesday analysis" if rollover else
+                      "Nearest active listed expiry used for analysis")
+        else:
+            expiry = choices["monthly"]
+            # Count weekdays after today through the listed expiry, without
+            # assuming Tuesday. A holiday-shifted Monday rolls on Friday.
+            remaining = sum((now.date()+timedelta(days=d)).weekday() < 5
+                            for d in range(1, (expiry-now.date()).days+1)) if expiry else None
+            rollover = remaining is not None and remaining <= 1
+            selected = choices["next_monthly" if rollover else "monthly"]
+            code = "BANKNIFTY_NEXT_MONTHLY_EXPIRY" if rollover else "BANKNIFTY_NEAREST_MONTHLY_EXPIRY"
+            label = "Next monthly expiry" if rollover else "Nearest monthly expiry"
+            reason = ("Current monthly expiry is in its final expiry window" if rollover else
+                      "Nearest active monthly expiry confirmed by listed futures metadata")
+        if selected is None:
+            reason += "; required listed expiry unavailable"
+        return {**choices, "analysis_expiry": selected,
+                "analysis_expiry_policy": {"code": code, "label": label, "reason": reason,
+                                           "available": selected is not None, "timezone": "Asia/Kolkata"}}
 
     def matching_future(self, index, expiry):
         with self.lock:

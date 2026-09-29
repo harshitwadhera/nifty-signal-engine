@@ -11,6 +11,7 @@ from .lifecycle import SignalJournal, SignalLifecycle, Submission
 from .structure import completed_bars, confirmed_swings
 from .explanation import safe
 from .lifecycle import ACTIVE
+from .decision import gate
 
 logger = logging.getLogger('market_app')
 
@@ -49,9 +50,12 @@ class LiveSignals:
             result = deepcopy(self.views.get(index))
         if result and 0 <= (self.stream.state.clock()-instant(result['last_updated'])).total_seconds() <= 10:
             return result
-        return {'index': index, 'decision': 'NO_TRADE', 'state': None, 'confidence': 0,
-                'bullish_score': 0, 'bearish_score': 0, 'category_scores': {}, 'record': None,
+        missing = asdict(self.engine.decide(SignalInput(index, self.stream.state.clock().isoformat())))
+        return {**missing, 'index': index, 'decision': 'NO_TRADE', 'state': None, 'confidence': 0, 'record': None,
                 'evidence': [], 'contradictions': [], 'last_updated': result['last_updated'] if result else None,
+                'qualification_gates': [*missing['qualification_gates'],
+                    self.lifecycle.planner.entry_window_gate(self.stream.state.clock().isoformat()),
+                    gate('observation', 'Signal observation', False, detail='Waiting for fresh signal observations')],
                 'data_quality': {'stale': True, 'blocking_reasons': ['Waiting for fresh signal observations']}}
 
     def history(self, **filters):
@@ -76,14 +80,21 @@ class LiveSignals:
         quality = dict(scored['data_quality'])
         quality['planning_reasons'] = list(submission.reasons)
         quality['stale'] = any(not quality.get(k, False) for k in ('structure_fresh', 'options_fresh', 'breadth_fresh', 'vix_fresh'))
+        gates = [*scored['qualification_gates'], self.lifecycle.planner.entry_window_gate(snapshot.as_of),
+                 gate('planning', 'Signal planning', True if submission.created else None if active else False,
+                      detail='; '.join(submission.reasons) or 'Qualified candidate created')]
         result = {**scored, 'index': index, 'decision': record.plan.direction if active else 'NO_TRADE',
                   'state': record.state if record else None, 'record': asdict(record) if record else None,
-                  'data_quality': quality, 'last_updated': snapshot.as_of}
+                  'data_quality': quality, 'last_updated': snapshot.as_of, 'qualification_gates': gates}
         if active and original_scores:
             for field in ('confidence', 'bullish_score', 'bearish_score', 'category_scores', 'evidence', 'contradictions'):
                 if field in original_scores:
                     result[field] = original_scores[field]
         result['current_qualification'] = scored
+        # Keep creation scores and their expiry together; today's gates and
+        # analysis metadata always describe the current observation separately.
+        result['score_expiry_selection'] = ((original or {}).get('input', {}).get('options', {}).get('expiry_selection', {})
+                                             if active and original_scores else scored['expiry_selection'])
         result['score_basis'] = 'candidate_creation' if active and original_scores else 'current_observation'
         if not active:
             result['confidence'] = 0
@@ -91,7 +102,7 @@ class LiveSignals:
             self.views[index] = safe(result)
         return submission
 
-    def snapshot(self, index):
+    def snapshot(self, index, option_summary=None):
         if index not in ("NIFTY", "BANKNIFTY"):
             raise ValueError("Unsupported index")
         market = self.structure.structure()
@@ -108,7 +119,7 @@ class LiveSignals:
         structure.update(spot_change_percent=change(spot), future_change_percent=change(future))
         if spot.get("stale", True) or future.get("stale", True):
             structure["stale"] = True
-        options, _ = self.options.response(index)
+        options = option_summary if option_summary is not None else self.options.response(index)[0]
         breadth = self.breadth.snapshot(index)
         return SignalInput(index, self.stream.state.clock().isoformat(), structure, options, volatility, breadth)
 
@@ -117,8 +128,8 @@ class LiveSignals:
 
     def evaluate(self, index):
         """Explicit internal call only; no polling thread or order integration."""
-        snapshot = self.snapshot(index)
         summary, contracts = self.options.response(index)
+        snapshot = self.snapshot(index, option_summary=summary)
         now = self.stream.state.clock().isoformat()
         structure = dict(snapshot.structure)
         symbol = 'NIFTY 50' if index == 'NIFTY' else 'NIFTY BANK'

@@ -34,6 +34,7 @@ class CategoryScore:
     available_weight: float
     evidence: tuple[str, ...]
     contradictions: tuple[str, ...]
+    maximum_weight: float = 0
 
 
 @dataclass(frozen=True)
@@ -117,3 +118,5 @@ class DecisionResult:
     evidence: tuple[str, ...]
     contradictions: tuple[str, ...]
     data_quality: dict
+    qualification_gates: tuple[dict, ...] = ()
+    expiry_selection: dict = field(default_factory=dict)

@@ -3,6 +3,7 @@
 No clocks, I/O, state, SDK classes or downstream lifecycle dependencies.
 """
 from math import isfinite
+from dataclasses import replace
 
 from .models import CategoryScore, ScoreResult, SignalConfig, SignalInput
 
@@ -188,6 +189,10 @@ class SignalEngine:
         categories = {"price_trend": self.price(snapshot.structure), "options_positioning": self.options(snapshot.options),
                       "breadth_constituents": self.breadth(snapshot.breadth),
                       "volatility": self.volatility(snapshot.volatility), "futures_structure": self.futures(snapshot.structure)}
+        weights = dict(price_trend=self.config.price_weight, options_positioning=self.config.options_weight,
+                       breadth_constituents=self.config.breadth_weight, volatility=self.config.volatility_weight,
+                       futures_structure=self.config.futures_weight)
+        categories = {name: replace(category, maximum_weight=weights[name]) for name, category in categories.items()}
         return ScoreResult(snapshot.index_name, snapshot.as_of, categories,
                            round(sum(c.bullish_points for c in categories.values()), 6),
                            round(sum(c.bearish_points for c in categories.values()), 6),

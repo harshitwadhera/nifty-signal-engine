@@ -23,7 +23,7 @@ def example(call=True):
         snapshot.structure.pop('recent_swing_high')
     else:
         snapshot.structure.pop('recent_swing_low')
-    snapshot.options.update(selected_expiry='2026-09-28', expiry_selection={'nearest': '2026-09-28'},
+    snapshot.options.update(selected_expiry='2026-09-28', expiry_selection={'nearest': '2026-09-28', 'analysis_expiry': '2026-09-28'},
                             coverage={'expected_contracts': 6, 'received_contracts': 6})
     rows = []
     for strike in (95, 100, 105):

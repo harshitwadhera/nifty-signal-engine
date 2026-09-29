@@ -5,11 +5,11 @@ const fs = require('node:fs');
 function node() { return {textContent:'', value:'', children:[], listeners:{},
   append(...items) {this.children.push(...items);}, replaceChildren(...items) {this.children=items;},
   addEventListener(event,action) {this.listeners[event]=action;}}; }
-async function render(data, ok=true) {
+async function render(data, ok=true, request=null) {
   const elements={}, calls=[];
   const context=vm.createContext({document:{getElementById:id=>elements[id] ||= node(),createElement:node},
     AbortSignal, Date, encodeURIComponent, setInterval(){},
-    fetch:async url=>{calls.push(url);return {ok,json:async()=>data};}});
+    fetch:async url=>{calls.push(url);return request ? request(url) : {ok,json:async()=>data};}});
   vm.runInContext(fs.readFileSync('app/static/options.js','utf8'),context);
   await new Promise(resolve=>setImmediate(resolve));
   return {elements,calls};
@@ -37,9 +37,25 @@ test('expiry selection requests selected expiry',async()=>{
   elements['nifty-options-expiry'].listeners.change();
   await new Promise(resolve=>setImmediate(resolve));
   assert.ok(calls.includes('/api/options/nifty?expiry=2026-09-28'));
+  assert.equal(elements['nifty-options-expiry'].children[0].textContent,'Automatic analysis expiry');
+  elements['nifty-options-expiry'].value='';
+  elements['nifty-options-expiry'].listeners.change();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.at(-1),'/api/options/nifty');
 });
 test('options errors clear data instead of leaving fresh values',async()=>{
   const {elements}=await render({},false);
   assert.match(elements['nifty-options'].textContent,/unavailable/);
   assert.equal(elements['nifty-options'].children.length,0);
+});
+
+test('expired manual selection returns to automatic inspection instead of retrying a stale expiry forever',async()=>{
+  const data={stale:true,expiries:['2026-10-06']};
+  const {elements,calls}=await render(data,true,url=>({ok:!url.includes('?expiry='),
+    status:url.includes('?expiry=') ? 404 : 200,json:async()=>data}));
+  elements['nifty-options-expiry'].value='2026-09-29';
+  elements['nifty-options-expiry'].listeners.change();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(elements['nifty-options-expiry'].value,'');
+  assert.deepEqual(calls.slice(-2),['/api/options/nifty?expiry=2026-09-29','/api/options/nifty']);
 });

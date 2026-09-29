@@ -47,3 +47,60 @@ test('evidence is rendered as text, never executable markup',async()=>{
   assert.ok(text(elements['nifty-signal']).includes(malicious));
   assert.ok(!fs.readFileSync('app/static/signals.js','utf8').includes('innerHTML'));
 });
+
+test('both indices display backend expiry policy, weightage and independent qualification gates',async()=>{
+  const {elements}=await render({decision:'NO_TRADE',bullish_score:0,bearish_score:31.5,
+    expiry_selection:{analysis_expiry:'2026-10-06',nearest:'2026-09-29',analysis_expiry_policy:{
+      code:'NIFTY_NEXT_WEEK_EXPIRY',label:'Next-week expiry',reason:'Current-week expiry skipped for Monday/Tuesday analysis'}},
+    category_scores:{options_positioning:{direction:'unavailable',bullish_points:0,bearish_points:0,available_weight:0,maximum_weight:30},
+      breadth_constituents:{direction:'bearish',bullish_points:0,bearish_points:9,available_weight:12,maximum_weight:15}},
+    qualification_gates:[{key:'minimum_score',label:'Winning score',status:'BLOCK',passed:false,actual:31.5,required:70},
+      {key:'option_coverage',label:'Options coverage (%)',status:'PASS',passed:true,actual:97.22,required:95},
+      {key:'options_fresh',label:'Options freshness',status:'BLOCK',passed:false,detail:'Full-chain freshness unavailable'},
+      {key:'entry_window',label:'New-entry window',status:'BLOCK',passed:false,actual:'Closed',required:'09:15–15:00 IST'},
+      {key:'planning',label:'Signal planning',status:'BLOCK',passed:false,detail:'Outside new-entry window'}],
+    evidence:['Evidence item'],contradictions:['Contradiction item'],data_quality:{stale:true}});
+  for (const index of ['nifty','banknifty']) {
+    const content=text(elements[index+'-signal']);
+    for (const label of ['Analysis expiry: 06 Oct 2026','Next-week expiry','Current-week expiry skipped',
+      'Current category weightage','Available / Max','0 / 30','12 / 15','TOTAL','WHY NO TRADE',
+      'BLOCK Winning score 31.5 / 70 required','PASS Options coverage (%) 97.22 / 95 required',
+      'BLOCK Options freshness','Full-chain freshness unavailable','Closed / 09:15–15:00 IST required',
+      'Outside new-entry window','Evidence','Contradictions','Data quality']) assert.ok(content.includes(label), label);
+  }
+});
+
+test('UI takes configured maxima, statuses and policy from backend without recomputing',async()=>{
+  const {elements}=await render({decision:'PUT',expiry_selection:{analysis_expiry:'2026-10-27',
+    analysis_expiry_policy:{label:'Next monthly expiry',reason:'Current monthly expiry is in its final expiry window'}},
+    category_scores:{price_trend:{direction:'bearish',bullish_points:0,bearish_points:10,available_weight:20,maximum_weight:25}},
+    qualification_gates:[{label:'Backend gate',passed:true,status:'PASS',actual:1,required:999},
+      {label:'Planning',status:'INFO',detail:'Existing signal lifecycle observed; no new signal'}]});
+  const content=text(elements['banknifty-signal']);
+  for (const value of ['27 Oct 2026','Next monthly expiry','final expiry window','20 / 25','PASS Backend gate 1 / 999 required',
+    'INFO Planning','CURRENT QUALIFICATION']) assert.ok(content.includes(value), value);
+});
+
+test('current gates and table use current scores while active creation evidence remains accessible',async()=>{
+  const {elements}=await render({decision:'CALL',score_basis:'candidate_creation',bullish_score:90,
+    score_expiry_selection:{analysis_expiry:'2026-09-29'},
+    category_scores:{options_positioning:{direction:'bullish',bullish_points:30,bearish_points:0,available_weight:30,maximum_weight:30}},
+    current_qualification:{bullish_score:20,bearish_score:0,category_scores:{options_positioning:{direction:'unavailable',
+      bullish_points:0,bearish_points:0,available_weight:0,maximum_weight:30}}},
+    qualification_gates:[{label:'Options freshness',status:'BLOCK',detail:'Stale'}]});
+  const content=text(elements['nifty-signal']);
+  assert.match(content,/Options unavailable 0 0 0 \/ 30/);
+  assert.match(content,/TOTAL  20 0/);
+  assert.match(content,/recorded at creation \(expiry: 29 Sept? 2026\)/);
+  assert.match(content,/bullish 30/);
+});
+
+test('missing analysis expiry is visibly unavailable and backend policy text stays escaped',async()=>{
+  const reason='<img src=x onerror=alert(1)>';
+  const {elements}=await render({decision:'NO_TRADE',expiry_selection:{analysis_expiry:null,
+    analysis_expiry_policy:{label:'Next monthly expiry',reason}},qualification_gates:[]});
+  const content=text(elements['nifty-signal']);
+  assert.ok(content.includes('Analysis expiry: Unavailable'));
+  assert.ok(content.includes(reason));
+  assert.ok(content.includes('INFO Qualification Waiting for backend gate details'));
+});

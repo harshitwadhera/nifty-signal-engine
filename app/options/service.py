@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
 
@@ -34,6 +34,7 @@ class OptionsService:
         self.snapshots = {}
         self.active_contracts = {}
         self.requested = {}
+        self.inspected = {}
         self.previous = {}
         self.last_ticks = {}
         self._session_key = None
@@ -126,15 +127,18 @@ class OptionsService:
             targets = []
             for index in INDICES:
                 choices = self.discovery.selections(index)
-                nearest = choices["nearest"]
+                analysis_expiry = choices["analysis_expiry"]
                 spot, _ = self._context(index)
-                if nearest:
-                    targets.append((index, nearest))
-                    selected += self.window.select(index, nearest, self.discovery.chain(index, nearest), spot)
+                if analysis_expiry:
+                    targets.append((index, analysis_expiry))
+                    selected += self.window.select(index, analysis_expiry, self.discovery.chain(index, analysis_expiry), spot)
                 with self.lock:
                     requested = self.requested.get(index)
-                if requested in self.discovery.get_expiries(index) and requested != nearest:
-                    targets.append((index, requested))
+                    inspected = self.inspected.get(index)
+                listed = self.discovery.get_expiries(index)
+                for extra in dict.fromkeys((requested, inspected)):
+                    if extra in listed and extra != analysis_expiry:
+                        targets.append((index, extra))
             with self.lock:
                 self.active_contracts = {c.instrument_token: c for c in selected}
                 self.snapshots = {k: v for k, v in self.snapshots.items() if k in targets}
@@ -294,15 +298,21 @@ class OptionsService:
                 logger.warning("", extra={"event": "options_previous_oi_failed"})
             self.stop.wait(1)
 
-    def response(self, index, expiry=None, window=10):
+    def response(self, index, expiry=None, window=10, *, inspection=False):
         now = local(self.clock())
         explicit = expiry is not None
-        expiry = expiry or self.discovery.selections(index)["nearest"]
+        choices = self.discovery.selections(index)
+        expiry = expiry if explicit else choices["analysis_expiry"]
         if expiry is not None and expiry not in self.discovery.get_expiries(index):
             raise ValueError("Expiry is not currently listed")
         if explicit:
             with self.lock:
-                self.requested[index] = expiry
+                # UI inspection must not cancel an explicit contract observation
+                # requested by the existing trade journal when returning to auto.
+                (self.inspected if inspection else self.requested)[index] = expiry
+        elif inspection:
+            with self.lock:
+                self.inspected.pop(index, None)
         contracts = self.discovery.chain(index, expiry) if expiry else []
         spot, front_future = self._context(index)
         with self.lock:
@@ -347,7 +357,7 @@ class OptionsService:
             summary.update(status=self.status, front_month_futures=front_future,
                            futures_basis="selected_expiry_match_only", snapshot_started_at=snapshot.get("started_at"),
                            expiries=[d.isoformat() for d in self.discovery.get_expiries(index)],
-                           expiry_selection={k: d.isoformat() if d else None for k,d in self.discovery.selections(index).items()},
+                           expiry_selection={k: v.isoformat() if isinstance(v, date) else v for k, v in choices.items()},
                            dropped_stream_ticks=self.dropped_ticks)
             return finite_json(summary), finite_json(displayed)
 
