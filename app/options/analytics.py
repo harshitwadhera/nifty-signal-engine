@@ -104,6 +104,10 @@ class OptionsAnalytics:
         complete = len(valid) == expected and expected > 0
         oi_rows = [r for r in rows if field_available(r, "oi")]
         flow_rows = [r for r in rows if positioning_usable(r)]
+        expected_by_side = {
+            "call": sum(r["option_type"] == "CE" for r in rows),
+            "put": sum(r["option_type"] == "PE" for r in rows),
+        }
         oi_complete = complete and len(oi_rows) == expected
         center = atm(sorted({r["strike"] for r in rows}), spot)
         strikes = sorted({r["strike"] for r in rows})
@@ -117,8 +121,13 @@ class OptionsAnalytics:
         for key, population, field in (("pcr_oi", rows, "oi"), ("pcr_volume", rows, "volume"),
                                        ("near_atm_pcr_oi", near, "oi"), ("near_atm_pcr_volume", near, "volume")):
             usable = paired_rows(population, field)
+            population_pairs = len({r["strike"] for r in population if r["option_type"] == "CE"} &
+                                   {r["strike"] for r in population if r["option_type"] == "PE"})
+            paired_strikes = len(usable)//2
             ratios[key] = pcr(usable, field)
-            ratio_quality[key] = {"usable_contracts": len(usable), "paired_strikes": len(usable)//2,
+            ratio_quality[key] = {"usable_contracts": len(usable), "paired_strikes": paired_strikes,
+                                  "population_pairs": population_pairs,
+                                  "population_fraction": round(paired_strikes/population_pairs, 6) if population_pairs else 0,
                                   "available": ratios[key] is not None,
                                   "reason": "Matched fresh CE/PE strikes" if ratios[key] is not None
                                   else "Matched fresh CE/PE data and positive call denominator required"}
@@ -130,10 +139,16 @@ class OptionsAnalytics:
                 "near_atm_window": window, "near_atm_quality": coverage(len(near), len(near_valid)),
                 "max_pain": pain, "distance_from_spot": pain-spot if pain is not None and spot is not None else None,
                 **levels, "oi_change_basis": "session_first_observation",
-                "positioning_quality": {side: sum(r["option_type"] == kind for r in flow_rows)
-                                        for side, kind in (("call", "CE"), ("put", "PE"))},
-                "oi_quality": {side: sum(r["option_type"] == kind and r["oi"] > 0 for r in oi_rows)
-                               for side, kind in (("call", "CE"), ("put", "PE"))},
+                "positioning_quality": {
+                    **{side: sum(r["option_type"] == kind for r in flow_rows)
+                       for side, kind in (("call", "CE"), ("put", "PE"))},
+                    **{side+"_expected": expected_by_side[side] for side in ("call", "put")},
+                },
+                "oi_quality": {
+                    **{side: sum(r["option_type"] == kind for r in oi_rows)
+                       for side, kind in (("call", "CE"), ("put", "PE"))},
+                    **{side+"_expected": expected_by_side[side] for side in ("call", "put")},
+                },
                 "atm_ce": next((r for r in rows if r["strike"] == center and r["option_type"] == "CE"), None),
                 "atm_pe": next((r for r in rows if r["strike"] == center and r["option_type"] == "PE"), None),
                 "timestamp": now.isoformat(), "last_full_chain_refresh_at": refresh,

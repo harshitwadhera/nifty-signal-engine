@@ -68,11 +68,21 @@ def test_production_chains_keep_all_usable_components(index, expected, non_fresh
     assert summary['coverage']['fresh_contracts'] == expected-non_fresh
     assert summary['coverage']['percent'] == percent
     assert summary['near_atm_quality']['percent'] == 100
-    assert availability(score) == dict(positioning_flow=10.5, atm_behavior=9, oi_wall_breakout=4.5, pcr_confirmation=6)
-    assert score.available_weight == 30 and score.direction == 'bullish'
-    assert score.bullish_points == 25.5 and score.bearish_points == 0  # Inside OI walls is neutral.
+    component_weights = availability(score)
+    assert component_weights['atm_behavior'] == 9
+    assert score.direction == 'bullish'
+    if non_fresh == 0:
+        assert component_weights == dict(positioning_flow=10.5, atm_behavior=9, oi_wall_breakout=4.5, pcr_confirmation=6)
+        assert score.available_weight == 30
+        assert score.bullish_points == 25.5 and score.bearish_points == 0
+    else:
+        assert 9 < score.available_weight < 30
+        assert 0 < component_weights['positioning_flow'] < 10.5
+        assert 0 < component_weights['oi_wall_breakout'] < 4.5
+        assert 0 < component_weights['pcr_confirmation'] < 6
+        assert score.bullish_points > 9 and score.bearish_points == 0
     result = SignalEngine().decide(replace(ready(index=index), options=summary))
-    assert result.decision == 'CALL' and result.confidence == 85.5
+    assert result.decision == 'CALL' and result.confidence > 70
     gates = {g['key']: g for g in result.qualification_gates}
     assert gates['option_coverage']['status'] == gates['full_chain_fresh']['status'] == 'INFO'
     assert gates['options_signal_data']['status'] == 'PASS'
@@ -80,15 +90,49 @@ def test_production_chains_keep_all_usable_components(index, expected, non_fresh
     json.dumps(asdict(result), allow_nan=False)
 
 
+
+def test_sparse_chain_scales_broad_components_instead_of_claiming_full_budget():
+    rows = chain()
+    for row in rows:
+        if row['strike'] != SPOT:
+            row['stale'] = True
+    summary = summarize(rows)
+    score = SignalEngine().options(summary)
+    weights = availability(score)
+    assert summary['coverage']['fresh_contracts'] == 2
+    assert summary['coverage']['percent'] < 1
+    assert weights['atm_behavior'] == 9
+    assert 0 < weights['positioning_flow'] < .2
+    assert 0 < weights['oi_wall_breakout'] < .1
+    assert 0 < weights['pcr_confirmation'] < .2
+    assert 9 < score.available_weight < 10
+    assert score.direction == 'bullish'
+    result = SignalEngine().decide(replace(ready(), options=summary))
+    assert result.decision == 'NO_TRADE'
+    assert 'Winning score below minimum' in result.data_quality['blocking_reasons']
+
+
+def test_component_population_scaling_has_no_hard_global_threshold():
+    engine = SignalEngine()
+    heavier = engine.options(summarize(chain(non_fresh=6)))
+    lighter = engine.options(summarize(chain(non_fresh=48)))
+    assert heavier.component_availability['atm_behavior']['available_weight'] == 9
+    assert lighter.component_availability['atm_behavior']['available_weight'] == 9
+    for key in ('positioning_flow', 'oi_wall_breakout', 'pcr_confirmation'):
+        assert 0 < lighter.component_availability[key]['available_weight'] < heavier.component_availability[key]['available_weight']
+    assert lighter.available_weight > 9
+
 def test_far_contracts_age_without_availability_collapse_or_max_pain_dependency():
     engine = SignalEngine()
     full, partial = summarize(chain()), summarize(chain(non_fresh=6))
     assert full['max_pain'] is not None and partial['max_pain'] is None
     before, after = engine.options(full), engine.options(partial)
-    assert before.available_weight == after.available_weight == 30
-    assert before.bullish_points == after.bullish_points == 25.5
+    assert before.available_weight == 30
+    assert 9 < after.available_weight < 30
+    assert before.bullish_points == 25.5
+    assert 9 < after.bullish_points < before.bullish_points
     assert before.bearish_points == after.bearish_points == 0
-    assert availability(before) == availability(after)
+    assert availability(after)['atm_behavior'] == availability(before)['atm_behavior'] == 9
     assert partial['call_oi_wall'] == SPOT+50 and partial['put_oi_wall'] == SPOT-50
 
 
@@ -206,7 +250,9 @@ def test_partial_positioning_never_invents_a_missing_side_or_calls_oi_additions_
 
 @pytest.mark.parametrize('ratio', [.1, 1, 5])
 def test_pcr_never_establishes_or_reverses_non_pcr_direction(ratio):
-    summary = dict(evidence_fresh=True, pcr_oi=ratio, pcr_volume=ratio, near_atm_pcr_oi=ratio)
+    quality = {"paired_strikes": 10, "population_pairs": 10}
+    summary = dict(evidence_fresh=True, pcr_oi=ratio, pcr_volume=ratio, near_atm_pcr_oi=ratio,
+                   pcr_quality={key: quality for key in ("pcr_oi", "pcr_volume", "near_atm_pcr_oi")})
     engine = SignalEngine()
     result = engine.options(summary)
     assert result.direction == 'neutral' and result.available_weight == 6

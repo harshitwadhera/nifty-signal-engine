@@ -1,7 +1,7 @@
 # Options component availability
 
 Branch: `fix/options-component-availability`, based on freshly fetched `origin/main`
-at `79c3140`. Scoring version: `5.6.0`. No merge or deployment is part of this change.
+at `79c3140`. Scoring version: `5.6.1`. No merge or deployment is part of this change.
 
 The old analytics layer required every selected-expiry contract to have a fresh
 price before exposing walls and full-expiry PCR. Its summary `stale` flag also
@@ -13,10 +13,10 @@ Thus even 208/214 fresh contracts could become 0/30 available.
 
 | Component | Maximum | Availability and directional evidence |
 | --- | ---: | --- |
-| Positioning flow | 10.5 | Requires usable fresh price/OI/session-OI-change observations and valid price/OI classifications on **both** sides. One-sided flow receives zero budget: the existing pooled zone-vote design has no independent side weights. Writing requires SHORT_BUILDUP; unwinding requires SHORT_COVERING or LONG_UNWINDING and negative session OI change. OI increases alone never identify writing. Usable observations without directional zones are neutral. |
-| ATM CE/PE behavior | 9 | Each side independently earns 4.5 available weight: fresh positive LTP, LIQUID/MODERATE liquidity, positive ordered bid/ask with depth, valid IV within the existing limit, and valid price/OI positioning. Missing or stale sides earn neither points nor weight. |
-| OI wall breakout | 4.5 | Positive fresh CALL and PUT OI candidates must identify both walls, with positive spot and an ordered call-wall/put-wall range. Missing, one-sided, or crossed walls remove this component only. Inside the range remains neutral. Walls are the strongest **observed usable** OI levels; they do not claim full-chain completeness. |
-| PCR confirmation | 6 | OI, volume, and near-ATM OI PCR each receive 2 available points when calculable. Each ratio independently uses matched CE/PE strikes with fresh, finite, nonnegative values for its own field and a positive call denominator. Missing one ratio does not remove others. Near-ATM volume PCR remains informational. PCR can only confirm an existing non-PCR anchor; conflict remains a contradiction and cannot reverse the anchor. |
+| Positioning flow | 10.5 | Requires usable fresh price/OI/session-OI-change observations and valid price/OI classifications on **both** sides. Its available budget is scaled by the weaker side's usable-observation fraction, so one fresh CALL and one fresh PUT cannot claim the same 10.5 points as a broadly observed chain. There is no hard percentage cutoff. Writing requires SHORT_BUILDUP; unwinding requires SHORT_COVERING or LONG_UNWINDING and negative session OI change. |
+| ATM CE/PE behavior | 9 | Each side independently earns 4.5 available weight: fresh positive LTP, LIQUID/MODERATE liquidity, positive ordered bid/ask with depth, valid IV within the existing limit, and valid price/OI positioning. This component is intentionally independent of broad-chain population. |
+| OI wall breakout | 4.5 | Positive fresh CALL and PUT OI candidates must identify both walls, with positive spot and an ordered call-wall/put-wall range. When walls exist, the available budget is scaled by balanced fresh OI population on the two sides. Sparse data therefore remains observable but cannot claim a full wall budget. |
+| PCR confirmation | 6 | OI, volume, and near-ATM OI PCR each have at most 2 available points. Each ratio uses matched fresh CE/PE strikes, and its available budget is proportional to matched-pair population for that ratio. There is no hard coverage threshold. PCR can only confirm an existing non-PCR anchor and cannot establish or reverse direction. |
 
 OI and volume calculations do not require option-price or IV validity; positioning
 and ATM behavior do. Aggregate ratios/walls/flow still use the existing REST batch;
@@ -113,13 +113,14 @@ OI walls: 0 / 4.5 unavailable · Insufficient valid OI-wall data or range
 PCR: 4 / 6 available · 2 of 3 ratios usable; confirmation only
 ```
 
-The NIFTY 208/214 and BANKNIFTY 266/314 deterministic fixtures both retain 9/9
-ATM and 30/30 total availability when broader evidence is usable; the inside-wall
-vote is neutral, resulting in 25.5 bullish Options points. Their final 85.5-point
-CALL qualifications are fixture outcomes, not claims about production direction.
-Both have `full_chain_fresh=false` and unavailable max pain. Staling only distant
-rows after a 100% snapshot keeps these component weights stable. At 212/214
-(99.1%), staling both ATM rows independently removes all 9 ATM points.
+The NIFTY 208/214 and BANKNIFTY 266/314 deterministic fixtures retain 9/9 ATM
+availability, while positioning, wall and PCR budgets scale proportionally with
+their own usable populations. They therefore remain useful instead of collapsing
+to 0/30, but incomplete broad-chain evidence cannot claim the same budget as a
+fully observed chain. A sparse 2/214 fixture with only ATM CE/PE fresh keeps 9/9
+ATM but receives only a small fractional budget for broader components and cannot
+qualify the 70-point signal threshold. No hard global percentage cutoff is used.
+Both incomplete fixtures have `full_chain_fresh=false` and unavailable max pain.
 
 ## Diagnostics and review
 

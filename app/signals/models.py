@@ -47,7 +47,7 @@ class ScoreResult:
     bearish_points: float
     available_weight: float
     config: "SignalConfig"
-    version: str = "5.6.0"
+    version: str = "5.6.1"
 
 
 @dataclass(frozen=True)

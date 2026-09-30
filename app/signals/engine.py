@@ -91,17 +91,34 @@ class SignalEngine:
         t, c = Tally(self.config), self.config
         weights = [c.options_weight*p for p in c.options_parts]
         components = {}
+
+        def balanced_fraction(quality):
+            """Proportionally scale broad-chain evidence; never use a hard coverage cutoff."""
+            quality = quality or {}
+            fractions = []
+            for side in ("call", "put"):
+                observed = number(quality.get(side))
+                expected = number(quality.get(side+"_expected"))
+                if observed is None or expected is None or observed < 0 or expected <= 0:
+                    return 0.0
+                fractions.append(min(1.0, observed/expected))
+            return min(fractions)
+
         def add(key, label, votes, weight, maximum, reason, **details):
             t.add(label, votes, weight)
             components[key] = dict(available_weight=round(weight if votes else 0, 6),
                                    maximum_weight=round(maximum, 6), reason=reason, **details)
+
         aggregate_fresh = data.get("evidence_fresh") is True
+
+        # Positioning uses every individually usable observation, but its evidence
+        # budget is proportional to the weaker CALL/PUT population. One fresh pair
+        # cannot claim the same 10.5-point budget as a broadly observed chain.
         flow_quality = data.get("positioning_quality") or {}
-        flow_ready = aggregate_fresh and all(positive(flow_quality.get(side)) for side in ("call", "put"))
+        flow_fraction = balanced_fraction(flow_quality) if aggregate_fresh else 0.0
+        flow_ready = flow_fraction > 0
         flow = []
         for side, writing_sign in (("put", 1), ("call", -1)):
-            # Additions alone do not identify buyers versus writers. Writing and
-            # unwinding are correlated OI evidence and share one fixed budget.
             for suffix, sign in (("writing_zones", writing_sign), ("unwinding_zones", -writing_sign)):
                 rows = (data.get(side+"_"+suffix) or []) if flow_ready else []
                 valid = [r for r in rows if positive(r.get("strike")) is not None and
@@ -113,9 +130,16 @@ class SignalEngine:
             addition = data.get("highest_"+side+"_oi_addition") or {}
             if positive(addition.get("value")) is not None:
                 t.evidence.append(f"{side} OI additions present; directional only with price/positioning")
-        add("positioning_flow", "Positioning flow", (flow or [0]) if flow_ready else [], weights[0], weights[0],
-            "Fresh price/OI positioning on both sides" if flow_ready else "Fresh price/OI positioning required on both CALL and PUT sides",
-            usable_call_observations=number(flow_quality.get("call")) or 0, usable_put_observations=number(flow_quality.get("put")) or 0)
+        flow_weight = weights[0]*flow_fraction
+        add("positioning_flow", "Positioning flow", (flow or [0]) if flow_ready else [], flow_weight, weights[0],
+            (f"Balanced usable CALL/PUT positioning population {100*flow_fraction:.1f}%"
+             if flow_ready else "Fresh price/OI positioning required on both CALL and PUT sides"),
+            usable_call_observations=number(flow_quality.get("call")) or 0,
+            usable_put_observations=number(flow_quality.get("put")) or 0,
+            expected_call_observations=number(flow_quality.get("call_expected")) or 0,
+            expected_put_observations=number(flow_quality.get("put_expected")) or 0)
+
+        # ATM remains deliberately independent of broad-chain population.
         atm_votes = []
         atm_details = {}
         for side, sign in (("ce", 1), ("pe", -1)):
@@ -125,30 +149,56 @@ class SignalEngine:
                 atm_votes.append(sign*BEHAVIOR[row["positioning"]])
         add("atm_behavior", "Liquid ATM CE/PE behavior", atm_votes, weights[1]*len(atm_votes)/2, weights[1],
             f"{len(atm_votes)} of 2 ATM sides usable", sides=atm_details)
+
+        # OI walls remain observable with an incomplete chain, but their budget is
+        # proportional to balanced fresh OI coverage on both sides.
         spot = positive(data.get("spot"))
         call, put = positive(data.get("call_oi_wall")), positive(data.get("put_oi_wall"))
-        # Inside the walls is neutral; wall distance is not an independent trend.
         oi_quality = data.get("oi_quality") or {}
-        wall_votes = self.range_vote(spot, call, put) if aggregate_fresh and all(
-            positive(oi_quality.get(side)) for side in ("call", "put")) else []
-        add("oi_wall_breakout", "OI wall breakout", wall_votes, weights[2], weights[2],
-            "Fresh CALL and PUT OI walls and valid range" if wall_votes else "Insufficient valid OI-wall data or range")
-        pcr_votes = []
-        for field in ("pcr_oi", "pcr_volume", "near_atm_pcr_oi"):
+        wall_fraction = balanced_fraction(oi_quality) if aggregate_fresh else 0.0
+        wall_votes = self.range_vote(spot, call, put) if wall_fraction > 0 else []
+        wall_weight = weights[2]*wall_fraction
+        add("oi_wall_breakout", "OI wall breakout", wall_votes, wall_weight, weights[2],
+            (f"Balanced usable CALL/PUT OI population {100*wall_fraction:.1f}%"
+             if wall_votes else "Insufficient valid OI-wall data or range"),
+            usable_call_observations=number(oi_quality.get("call")) or 0,
+            usable_put_observations=number(oi_quality.get("put")) or 0,
+            expected_call_observations=number(oi_quality.get("call_expected")) or 0,
+            expected_put_observations=number(oi_quality.get("put_expected")) or 0)
+
+        # PCR is still confirmation-only. Each ratio gets at most one third of the
+        # 6-point budget, scaled by its own matched-strike population. No hard
+        # percentage threshold is introduced.
+        ratio_quality = data.get("pcr_quality") or {}
+        anchor = t.bull-t.bear
+        pcr_available = 0.0
+        usable_ratios = 0
+        ratio_details = {}
+        for field, label in (("pcr_oi", "OI"), ("pcr_volume", "Volume"), ("near_atm_pcr_oi", "Near-ATM OI")):
             value = number(data.get(field)) if aggregate_fresh else None
-            if value is not None and value >= 0:
-                pcr_votes.append(1 if value > c.pcr_bullish else -1 if value < c.pcr_bearish else 0)
-        if pcr_votes:
-            # Ratios confirm a non-PCR direction, never establish one or reverse it.
-            anchor = t.bull-t.bear
-            aligned = [v if anchor*v > 0 else 0 for v in pcr_votes]
-            if any(anchor*v < 0 for v in pcr_votes):
+            quality = ratio_quality.get(field) or {}
+            paired = number(quality.get("paired_strikes"))
+            population = number(quality.get("population_pairs"))
+            fraction = (min(1.0, paired/population)
+                        if paired is not None and population is not None and paired > 0 and population > 0 else 0.0)
+            available = value is not None and value >= 0 and fraction > 0
+            ratio_details[field] = {"paired_strikes": paired or 0, "population_pairs": population or 0,
+                                    "population_fraction": round(fraction, 6), "available": available}
+            if not available:
+                continue
+            usable_ratios += 1
+            vote = 1 if value > c.pcr_bullish else -1 if value < c.pcr_bearish else 0
+            aligned = vote if anchor*vote > 0 else 0
+            if anchor*vote < 0:
                 t.conflicts.append("PCR conflicts with non-PCR positioning")
-        else:
-            aligned = []
-        add("pcr_confirmation", "PCR confirmation (non-PCR anchor required)", aligned,
-            weights[3]*len(pcr_votes)/3, weights[3], f"{len(pcr_votes)} of 3 ratios usable; confirmation only",
-            usable_ratios=len(pcr_votes))
+            ratio_weight = weights[3]/3*fraction
+            t.add(f"PCR confirmation ({label}; non-PCR anchor required)", [aligned], ratio_weight)
+            pcr_available += ratio_weight
+        components["pcr_confirmation"] = dict(
+            available_weight=round(pcr_available, 6), maximum_weight=round(weights[3], 6),
+            reason=f"{usable_ratios} of 3 ratios usable; weight scaled by matched-strike population",
+            usable_ratios=usable_ratios, ratios=ratio_details)
+
         if positive(data.get("max_pain")) is not None:
             t.evidence.append("Max pain available as secondary context; no directional points")
         return replace(t.result(), component_availability=components)
