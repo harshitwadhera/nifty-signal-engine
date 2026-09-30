@@ -1,6 +1,7 @@
 // Small DOM double for the dependency-free browser scripts; visual layout is checked in a browser.
 function node(tagName = 'div') {
   return {tagName, textContent: '', value: '', className: '', clientWidth: 420, children: [], listeners: {}, attributes: {},
+    get firstChild() { return this.children[0]; },
     append(...items) { for (const item of items) { item.remove?.(); item.parent = this; this.children.push(item); } },
     replaceChildren(...items) { for (const child of this.children) child.parent = null; this.children = []; this.append(...items); },
     remove() { if (this.parent) { this.parent.children = this.parent.children.filter(item => item !== this); this.parent = null; } },

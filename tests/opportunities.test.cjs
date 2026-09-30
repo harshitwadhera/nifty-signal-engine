@@ -32,7 +32,7 @@ test('confirmed opportunity table shows model result and taken flag',async()=>{
       invalidation:{level:24950},target1:{level:25100},target2:{level:25200}}};
   const {elements,calls}=await render({items:[item],total:1});
   const content=text(elements['opportunity-history']);
-  for(const value of ['NIFTY','CALL','NIFTYTESTCE','25,010','24,950','25,100','25,200','T1 HIT → STOPPED','NO']) {
+  for(const value of ['NIFTY','CALL','NIFTYTESTCE','25,010','24,950','25,100','25,200','T1 HIT → STOPPED','NO','Confirmation / model entry']) {
     assert.ok(content.includes(value),value);
   }
   assert.equal(elements['opportunity-history-status'].textContent,'Showing 1 of 1 confirmed opportunities');
@@ -60,4 +60,14 @@ test('history failure clears stale rows and shows an unavailable message',async(
   const content=text(elements['opportunity-history']);
   assert.match(content,/temporarily unavailable/);
   assert.ok(!content.includes('NIFTY'));
+});
+
+test('legacy missing fields stay unavailable and planned trigger is never presented as observed entry',async()=>{
+  const {elements}=await render({items:[{state:'TARGET2_HIT',history:[null,{state:'TARGET2_HIT'}],taken:false,
+    plan:{entry_trigger:{level:1234567}}},{state:'CONFIRMED',history:null,plan:null}],total:2});
+  const content=text(elements['opportunity-history']);
+  assert.match(content,/T2 HIT NO/);
+  assert.match(content,/CONFIRMED \/ ACTIVE NO/);
+  assert.ok(!content.includes('12,34,567'));
+  assert.ok(!content.includes('undefined'));
 });

@@ -24,6 +24,7 @@ async function page(now, missingTicks=false, name='index', trade=null) {
     '/api/market/snapshot':{instruments:[]},
     '/api/market/structure':{nifty:{},banknifty:{},recovery_status:'ready'},
     '/api/signals/current':{signals:['NIFTY','BANKNIFTY'].map(index=>({index,decision:'NO_TRADE'}))},
+    '/api/signals/opportunities':{items:[],total:0},
     '/api/options/nifty':{expiries:['2026-10-06']},
     '/api/options/banknifty':{expiries:['2026-10-27']},
     '/api/candles/NIFTY':{symbol:'NIFTY 50',interval:'5m',candles:[{
@@ -74,13 +75,13 @@ async function page(now, missingTicks=false, name='index', trade=null) {
 }
 const initialRequests={index:['/api/connection','/api/market/live',
   '/api/candles/NIFTY?interval=5m&limit=100','/api/candles/BANKNIFTY?interval=5m&limit=100',
-  '/api/signals/current','/api/trades/active','/api/trades/setup/nifty','/api/trades/setup/banknifty'].sort(),
+  '/api/signals/current','/api/signals/opportunities?limit=25','/api/trades/active','/api/trades/setup/nifty','/api/trades/setup/banknifty'].sort(),
   analysis:['/api/market/structure','/api/options/nifty','/api/options/banknifty'].sort()};
 const recurringRequests=name=>initialRequests[name].map(url=>url
   .replace('/api/candles/NIFTY?interval=5m&limit=100','/api/candles/NIFTY?interval=5m&limit=3')
   .replace('/api/candles/BANKNIFTY?interval=5m&limit=100','/api/candles/BANKNIFTY?interval=5m&limit=3')).sort();
 
-for(const [name,files] of Object.entries({index:['market_hours.js','dashboard.js','charts.js','signals.js','trades.js'],
+for(const [name,files] of Object.entries({index:['market_hours.js','dashboard.js','charts.js','signals.js','trades.js','opportunities.js'],
   analysis:['market_hours.js','structure.js','options.js']})) {
 test(`${name} loads only its own consumers after the shared helper`,()=>{
   assert.deepEqual(scripts(name).map(([, , file])=>file),files);
@@ -97,7 +98,7 @@ test(`${name} sections load once and ordinary polling stays idle at ${now}`,asyn
     assert.deepEqual([...h.calls].sort(),initialRequests[name]);
     h.calls.length=0;await h.poll();await h.poll();assert.deepEqual(h.calls,[]);
     assert.deepEqual(h.timers.map(t=>[t.script,t.ms]),name==='index' ? [
-      ['dashboard.js',2000],['charts.js',5000],['signals.js',5000],['trades.js',2000]] : [
+      ['dashboard.js',2000],['charts.js',5000],['signals.js',5000],['trades.js',2000],['opportunities.js',10000]] : [
       ['structure.js',5000],['options.js',5000],['options.js',5000]]);
   });
 }

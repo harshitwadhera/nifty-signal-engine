@@ -187,18 +187,22 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
         trades = trade_service().by_signal_ids([record.get('signal_id') for record in history['items']])
         items = []
         for record in history['items']:
-            confirmed = next((event for event in record.get('history', ()) if event.get('state') == 'CONFIRMED'), None)
+            events = record.get('history')
+            events = [event for event in events if isinstance(event, dict)] if isinstance(events, (list, tuple)) else []
+            confirmed = next((event for event in events if event.get('state') == 'CONFIRMED'), None)
+            plan = record.get('plan')
+            plan = plan if isinstance(plan, dict) else {}
             trade = trades.get(record.get('signal_id'))
             items.append({
                 'signal_id': record.get('signal_id'),
-                'index_name': (record.get('plan') or {}).get('index_name'),
-                'direction': (record.get('plan') or {}).get('direction'),
-                'confirmed_at': confirmed.get('at') if confirmed else None,
+                'index_name': plan.get('index_name'),
+                'direction': plan.get('direction'),
+                'confirmed_at': record.get('confirmed_at') or (confirmed.get('at') if confirmed else None),
                 'state': record.get('state'),
-                'plan': record.get('plan'),
+                'plan': plan,
                 'confirmation_price': record.get('confirmation_price'),
-                'history': record.get('history', ()),
-                'outcome': record.get('outcome', {}),
+                'history': events,
+                'outcome': record.get('outcome') if isinstance(record.get('outcome'), dict) else {},
                 'taken': trade is not None,
                 'manual_trade': None if trade is None else {
                     'trade_id': trade.get('trade_id'),

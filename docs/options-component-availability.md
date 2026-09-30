@@ -75,10 +75,35 @@ requires its own fresh liquid option after qualification.
 Overall chain coverage and full-chain freshness are INFO. Minimum score is now 60,
 while minimum aligned categories remain 4, minimum separation remains 15, breadth
 coverage remains 90% with the full-index requirement, and contradiction/index/expiry
-checks are unchanged. Category budgets still sum to 100; only the winning-score gate
-was lowered. With the new threshold, ATM-only Options evidence can reach 69 directional
-points when Price, Breadth and Futures are all fully aligned, so it can qualify if every
-other gate also passes.
+checks are unchanged. Category budgets still sum to 100.
+
+Scoring and category alignment are separate. Options counts toward the four-category
+gate only when its direction matches the winning direction **and its absolute net
+non-PCR directional points exceed the largest single directional component budget**.
+With the current components that budget is `max(10.5, 9, 4.5) = 10.5`. The net is the
+sum of bullish minus bearish points from positioning flow, ATM behavior, and OI walls.
+The budget is derived from the configured component weights, not an overall chain
+coverage percentage. More evidence than any one component can supply is necessary;
+neutral availability and PCR confirmation cannot provide independent confirmation.
+The existing contradiction rules still apply separately.
+
+Examples with Price 30 + Breadth 15 + Futures 15 aligned and neutral VIX:
+
+| Options evidence | Directional total | Fourth category? |
+| --- | ---: | --- |
+| Unavailable | 60 | No |
+| One ATM side | 64.5 | No |
+| Both ATM sides only | 69 | No |
+| Both ATM sides plus full PCR confirmation | 75 | No; non-PCR net remains 9 |
+| Full positioning alone | 70.5 | No; exactly one component budget |
+| Both ATM sides + half positioning, same direction | 74.25 | Yes; non-PCR net 14.25 |
+| Full directional Options | 90 | Yes; non-PCR net 24 |
+
+Bearish evidence follows the same rule. All valid sparse points still contribute
+their original proportional score and available weight, even when Options cannot
+count as aligned. Blocked decisions retain their scores but report zero confidence,
+as before. The qualification gate detail and `options_quality.alignment` expose the
+observed net, derived budget, eligibility, and whether Options counted.
 
 Illustrative API excerpt (independent broader-component data may differ):
 
@@ -120,9 +145,9 @@ availability, while positioning, wall and PCR budgets scale proportionally with
 their own usable populations. They therefore remain useful instead of collapsing
 to 0/30, but incomplete broad-chain evidence cannot claim the same budget as a
 fully observed chain. A sparse 2/214 fixture with only ATM CE/PE fresh keeps 9/9 ATM and receives only a
-small fractional budget for broader components. Under the new 60-point winning-score
-gate, such a snapshot can still qualify when the other three directional categories
-are fully aligned and all remaining gates pass. No hard global percentage cutoff is used.
+small fractional budget for broader components. It retains a score just above 69
+with the other three categories full, but fails the four-category alignment gate.
+No hard global percentage cutoff is used.
 Both incomplete fixtures have `full_chain_fresh=false` and unavailable max pain.
 
 ## Diagnostics and review

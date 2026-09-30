@@ -27,7 +27,17 @@ def gate(key, label, passed, actual=None, required=None, detail=None):
 def decide(snapshot, scores, config):
     bull, bear = scores.bullish_points, scores.bearish_points
     winner = "bullish" if bull > bear else "bearish" if bear > bull else "neutral"
-    aligned = tuple(k for k, c in scores.categories.items() if c.direction == winner and winner != "neutral")
+    option_score = scores.categories["options_positioning"]
+    # Alignment needs more net independent evidence than any single directional
+    # Options component can supply. PCR cannot unlock it; sparse scores stay intact.
+    directional_components = ("positioning_flow", "atm_behavior", "oi_wall_breakout")
+    option_net = round(sum(part.get("bullish_points", 0)-part.get("bearish_points", 0)
+                          for key in directional_components
+                          for part in [option_score.component_availability.get(key, {})]), 6)
+    single_component_budget = config.options_weight*max(config.options_parts[:3])
+    options_align = abs(option_net) > single_component_budget
+    aligned = tuple(k for k, c in scores.categories.items() if c.direction == winner and winner != "neutral"
+                    and (k != "options_positioning" or options_align))
     issues = []
     gates = []
     def check(key, label, passed, actual, required, reason, detail=None):
@@ -39,7 +49,6 @@ def decide(snapshot, scores, config):
                    ("structure_fresh", snapshot.structure, "as_of"),
                    ("breadth_fresh", snapshot.breadth, "as_of"),
                    ("vix_fresh", snapshot.volatility, "as_of"))}
-    option_score = scores.categories["options_positioning"]
     # The summary timestamp describes row-level validation at observation time.
     # REST completion time and full-chain stale are diagnostic, not freshness gates.
     quality["options_signal_data"] = (option_score.available_weight > 0 and fresh(
@@ -49,7 +58,9 @@ def decide(snapshot, scores, config):
         ("selected_expiry", "coverage", "full_chain_fresh", "near_atm_quality", "pcr_quality", "positioning_quality", "oi_quality")}
     quality["options_quality"].update(component_availability=option_score.component_availability,
         atm_quality=option_score.component_availability.get("atm_behavior", {}).get("sides", {}),
-        options_total_available_weight=option_score.available_weight)
+        options_total_available_weight=option_score.available_weight,
+        alignment={"non_pcr_net_points": option_net, "single_component_budget": single_component_budget,
+                   "eligible": options_align, "counted": "options_positioning" in aligned})
     quality["options_quality"] = finite_json(quality["options_quality"])
     for key, label in (("structure_fresh", "Structure freshness"), ("options_signal_data", "Options signal data"),
                        ("breadth_fresh", "Breadth freshness"), ("vix_fresh", "VIX freshness")):
@@ -86,7 +97,9 @@ def decide(snapshot, scores, config):
           and snapshot.breadth.get("index", snapshot.index_name) == snapshot.index_name,
           None, snapshot.index_name, "Snapshot index mismatch")
     check("minimum_aligned", "Aligned categories", len(aligned) >= config.minimum_aligned,
-          len(aligned), config.minimum_aligned, "Fewer than minimum aligned categories")
+          len(aligned), config.minimum_aligned, "Fewer than minimum aligned categories",
+          f"Options alignment requires net non-PCR evidence above the largest directional component budget "
+          f"({single_component_budget:g}); observed {abs(option_net):g}. Sparse points still count toward score.")
     check("minimum_score", "Winning score", max(bull, bear) >= config.minimum_score,
           max(bull, bear), config.minimum_score, "Winning score below minimum")
     check("minimum_separation", "Score separation", abs(bull-bear) >= config.minimum_separation and winner != "neutral",

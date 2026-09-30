@@ -114,7 +114,7 @@ def test_major_conflicting_evidence_blocks():
     sample.options['atm_pe']['positioning'] = 'LONG_BUILDUP'
     result = SignalEngine().decide(sample)
     assert result.bullish_score >= 60
-    assert len(result.aligned_categories) == 4
+    assert len(result.aligned_categories) == 3
     assert result.decision == 'NO_TRADE'
     assert any('Major category contradiction' in reason for reason in result.data_quality['blocking_reasons'])
     assert result.contradictions

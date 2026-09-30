@@ -8,7 +8,7 @@
   }) : '—';
 
   function states(item) {
-    return new Set((item.history || []).map(event => event.state));
+    return new Set((Array.isArray(item.history) ? item.history : []).map(event => event?.state));
   }
 
   function modelResult(item) {
@@ -44,7 +44,7 @@
     const table = document.createElement('table');
     const head = document.createElement('thead');
     const header = document.createElement('tr');
-    for (const title of ['Confirmed', 'Index', 'Signal', 'Option', 'Entry', 'Stop', 'T1', 'T2', 'Model result', 'Taken?']) {
+    for (const title of ['Confirmed', 'Index', 'Signal', 'Option', 'Confirmation / model entry', 'Stop', 'T1', 'T2', 'Model result', 'Taken?']) {
       const th = document.createElement('th');
       th.scope = 'col';
       th.textContent = title;
@@ -57,7 +57,7 @@
     for (const item of items) {
       const plan = item.plan || {};
       const option = plan.option || {};
-      const entry = item.confirmation_price ?? item.outcome?.entry_underlying ?? plan.entry_trigger?.level;
+      const entry = item.confirmation_price ?? item.outcome?.entry_underlying;
       const row = document.createElement('tr');
       row.append(
         cell(when(item.confirmed_at)),

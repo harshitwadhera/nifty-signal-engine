@@ -54,7 +54,10 @@ class SignalJournal:
             legacy = json.loads(payload)
             self.db.execute('INSERT OR IGNORE INTO signal_outcomes VALUES (?,?)',
                             (signal_id, json.dumps(legacy.get('outcome', {}), allow_nan=False)))
-            for sequence, event in enumerate(legacy.get('history', ())):
+            history = legacy.get('history')
+            for sequence, event in enumerate(history if isinstance(history, list) else []):
+                if not (isinstance(event, dict) and isinstance(event.get('state'), str) and isinstance(event.get('at'), str)):
+                    continue
                 self.db.execute('INSERT OR IGNORE INTO signal_events VALUES (?,?,?,?,?)',
                     (signal_id, sequence, event['state'], event['at'],
                      json.dumps({'event': event, 'record': None, 'explanation': None}, allow_nan=False)))
@@ -110,17 +113,44 @@ class SignalJournal:
             if value is not None:
                 conditions.append('substr(created_at,1,10)'+op+'?')
                 values.append(str(value))
+        source = 'signals'
         if confirmed_only:
-            conditions.append("""EXISTS (
-                SELECT 1 FROM signal_events
-                WHERE signal_events.signal_id=signals.signal_id
-                  AND signal_events.state='CONFIRMED'
-            )""")
+            source += """ JOIN (
+                SELECT signal_id, MIN(observed_at) AS confirmed_at FROM signal_events
+                WHERE state='CONFIRMED' GROUP BY signal_id
+            ) confirmations USING (signal_id)"""
         where = ' WHERE '+' AND '.join(conditions) if conditions else ''
-        total = self.db.execute('SELECT count(*) FROM signals'+where, values).fetchone()[0]
-        rows = self.db.execute('SELECT record FROM signals'+where+' ORDER BY created_at DESC, signal_id DESC LIMIT ? OFFSET ?',
-                               [*values, limit, offset]).fetchall()
-        return {'items': [json.loads(r[0]) for r in rows], 'total': total, 'limit': limit, 'offset': offset}
+        total = self.db.execute('SELECT count(*) FROM '+source+where, values).fetchone()[0]
+        if not confirmed_only:
+            rows = self.db.execute('SELECT record FROM signals'+where+' ORDER BY created_at DESC, signal_id DESC LIMIT ? OFFSET ?',
+                                  [*values, limit, offset]).fetchall()
+            items = [json.loads(r[0]) for r in rows]
+        else:
+            rows = self.db.execute('SELECT record, signal_id, index_name, direction, state, confirmed_at FROM '+source+where+
+                                   ' ORDER BY confirmed_at DESC, signal_id DESC LIMIT ? OFFSET ?',
+                                   [*values, limit, offset]).fetchall()
+            events = {row[1]: [] for row in rows}
+            if events:
+                placeholders = ','.join('?' for _ in events)
+                for signal_id, state, at in self.db.execute(
+                        f'SELECT signal_id, state, observed_at FROM signal_events WHERE signal_id IN ({placeholders}) '
+                        'ORDER BY signal_id, sequence', tuple(events)):
+                    events[signal_id].append({'state': state, 'at': at})
+            items = []
+            for payload, signal_id, index_name, direction, state, confirmed_at in rows:
+                try:
+                    record = json.loads(payload)
+                except (ValueError, TypeError):
+                    record = {}
+                record = record if isinstance(record, dict) else {}
+                plan = record.get('plan')
+                plan = dict(plan) if isinstance(plan, dict) else {}
+                plan.update(index_name=index_name, direction=direction)
+                # Event rows are authoritative even when serialized history is
+                # incomplete. This projection never writes back to either journal.
+                items.append({**record, 'signal_id': signal_id, 'state': state, 'plan': plan,
+                              'confirmed_at': confirmed_at, 'history': events[signal_id]})
+        return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
 
     def load(self):
         records = {}
