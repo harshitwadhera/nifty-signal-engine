@@ -2,23 +2,32 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
-function node() { return {textContent:'', className:'', children:[], append(...v){this.children.push(...v);}, replaceChildren(...v){this.children=v;}}; }
+function node(document, tagName='div') { return {tagName,textContent:'', className:'', children:[], listeners:{}, attrs:{},
+  scrollTop:0,scrollLeft:0,
+  append(...v){for(const child of v){child.parent=this;this.children.push(child);}},
+  replaceChildren(...v){for(const child of this.children){child.parent=null;if(child.contains(document.activeElement)) document.activeElement=null;}
+    this.children=[];this.append(...v);},
+  contains(target){return this===target || this.children.some(child=>child.contains(target));},
+  get firstChild(){return this.children[0];},focus(){document.activeElement=this;},
+  addEventListener(event,action){this.listeners[event]=action;}, setAttribute(key,value){this.attrs[key]=value;}}; }
 function text(n) {return [n.textContent, ...n.children.map(text)].join(' ');}
+function find(n, predicate) {return predicate(n) ? n : n.children.map(child=>find(child,predicate)).find(Boolean);}
 async function render(signal, ok=true) {
-  const elements={}, calls=[];
-  const context=vm.createContext({document:{getElementById:id=>elements[id] ||= node(), createElement:node},
-    AbortSignal, Date, setInterval(){}, fetch:async url=>{
+  const elements={}, calls=[]; let poll;
+  const document={activeElement:null,getElementById:id=>elements[id] ||= node(document),createElement:tag=>node(document,tag)};
+  const context=vm.createContext({document,window:{marketAutoRefreshAllowed:()=>true},
+    AbortSignal, Date, setInterval(fn){poll=fn;}, fetch:async url=>{
       calls.push(url); return {ok,json:async()=>({signals:['NIFTY','BANKNIFTY'].map(index=>({...signal,index}))})};
     }});
   vm.runInContext(fs.readFileSync('app/static/signals.js','utf8'),context);
   await new Promise(resolve=>setImmediate(resolve));
-  return {elements,calls};
+  return {elements,calls,document,refresh:async next=>{if(next) signal=next;poll();await new Promise(resolve=>setImmediate(resolve));}};
 }
 test('NO TRADE is a normal neutral result with reasons',async()=>{
   const {elements,calls}=await render({decision:'NO_TRADE',confidence:0,data_quality:{stale:false,blocking_reasons:['Winning score below minimum']}});
   const panel=elements['nifty-signal'];
-  assert.equal(panel.children[0].textContent,'NO TRADE');
-  assert.equal(panel.children[0].className,'signal-neutral');
+  assert.equal(panel.children[0].children[0].textContent,'NO TRADE');
+  assert.equal(panel.children[0].children[0].className,'signal-neutral');
   assert.match(text(panel),/Winning score below minimum/);
   assert.match(text(panel),/No active signal/);
   assert.deepEqual(calls,['/api/signals/current']);
@@ -37,7 +46,7 @@ test('directional panel shows plan, categories, evidence and outcomes',async()=>
 });
 test('failed request clears actionable signal display',async()=>{
   const {elements}=await render({},false);
-  assert.equal(elements['nifty-signal'].children[0].textContent,'NO TRADE');
+  assert.equal(elements['nifty-signal'].children[0].children[0].textContent,'NO TRADE');
   assert.match(text(elements['banknifty-signal']),/observations unavailable/);
   assert.match(text(elements['nifty-signal']),/No active signal/);
 });
@@ -54,7 +63,7 @@ test('both indices display backend expiry policy, weightage and independent qual
       code:'NIFTY_NEXT_WEEK_EXPIRY',label:'Next-week expiry',reason:'Current-week expiry skipped for Monday/Tuesday analysis'}},
     category_scores:{options_positioning:{direction:'unavailable',bullish_points:0,bearish_points:0,available_weight:0,maximum_weight:30},
       breadth_constituents:{direction:'bearish',bullish_points:0,bearish_points:9,available_weight:12,maximum_weight:15}},
-    qualification_gates:[{key:'minimum_score',label:'Winning score',status:'BLOCK',passed:false,actual:31.5,required:70},
+    qualification_gates:[{key:'minimum_score',label:'Winning score',status:'BLOCK',passed:false,actual:31.5,required:60},
       {key:'option_coverage',label:'Overall options chain coverage (%)',status:'INFO',passed:null,actual:97.22,detail:'Diagnostic only'},
       {key:'options_signal_data',label:'Options signal data',status:'BLOCK',passed:false,detail:'No current usable component evidence'},
       {key:'entry_window',label:'New-entry window',status:'BLOCK',passed:false,actual:'Closed',required:'09:15–15:00 IST'},
@@ -64,7 +73,7 @@ test('both indices display backend expiry policy, weightage and independent qual
     const content=text(elements[index+'-signal']);
     for (const label of ['Analysis expiry: 06 Oct 2026','Next-week expiry','Current-week expiry skipped',
       'Current category weightage','Available / Max','0 / 30','12 / 15','TOTAL','WHY NO TRADE',
-      'BLOCK Winning score 31.5 / 70 required','INFO Overall options chain coverage (%) 97.22',
+      'BLOCK Winning score 31.5 / 60 required','INFO Overall options chain coverage (%) 97.22',
       'BLOCK Options signal data','No current usable component evidence','Closed / 09:15–15:00 IST required',
       'Outside new-entry window','Evidence','Contradictions','Data quality']) assert.ok(content.includes(label), label);
   }
@@ -120,8 +129,97 @@ test('partial Options weights and current component diagnostics stay usable belo
   for (const value of ['Options bullish 16.5 0 23.5 / 30','208 / 214 (97.2%)','Full chain fresh: No',
     'ATM CE: Fresh','ATM PE: Fresh','ATM behavior: 9 / 9 available','OI walls: 0 / 4.5 unavailable',
     'PCR: 4 / 6 available','INFO Overall options chain coverage (%) 84.7','PASS Options signal data']) assert.ok(content.includes(value),value);
-  const details=panel.children.find(n=>n.children[0]?.textContent==='OPTIONS DATA QUALITY');
+  const details=find(panel,n=>n.children[0]?.textContent==='OPTIONS DATA QUALITY');
   assert.ok(details && !details.open);
   assert.ok(!content.includes('[object Object]'));
   assert.deepEqual(calls,['/api/signals/current']);
+});
+
+
+test('qualification details are kept behind the compact info control',async()=>{
+  const {elements}=await render({decision:'NO_TRADE',qualification_gates:[
+    {label:'Winning score',status:'BLOCK',actual:55,required:60,detail:'Below threshold'}]});
+  const panel=elements['nifty-signal'];
+  const info=panel.children.find(n=>n.className==='signal-decision-info');
+  assert.ok(info);
+  assert.equal(info.children[0].textContent,'ⓘ');
+  assert.match(text(info),/WHY NO TRADE/);
+  assert.match(text(info),/Winning score/);
+  assert.equal(info.children[0].attrs['aria-expanded'],'false');
+  info.children[0].listeners.click();
+  assert.match(info.className,/open/);
+  assert.equal(info.children[0].attrs['aria-expanded'],'true');
+});
+
+test('qualification click, close control, Escape and ARIA share one disclosure state',async()=>{
+  const {elements,document}=await render({decision:'NO_TRADE'});
+  for(const index of ['nifty','banknifty']) {
+    const info=find(elements[index+'-signal'],n=>n.className==='signal-decision-info');
+    const [button,panel]=info.children, close=panel.children[0];
+    assert.equal(button.attrs['aria-controls'],panel.id);
+    assert.equal(panel.attrs['aria-labelledby'],button.id);
+    assert.equal(panel.attrs.role,'region');
+    assert.equal(panel.hidden,true);
+    button.focus(); button.listeners.click(); // Native button Enter/Space also dispatches click.
+    assert.equal(panel.hidden,false); assert.equal(button.attrs['aria-expanded'],'true');
+    button.listeners.click();
+    assert.equal(panel.hidden,true); assert.equal(button.attrs['aria-expanded'],'false');
+    button.listeners.click(); close.focus(); close.listeners.click();
+    assert.equal(panel.hidden,true); assert.equal(document.activeElement,button);
+    button.listeners.click(); close.focus(); let prevented=false;
+    info.listeners.keydown({key:'Escape',preventDefault(){prevented=true;}});
+    assert.equal(prevented,true); assert.equal(panel.hidden,true);
+    assert.equal(button.attrs['aria-expanded'],'false'); assert.equal(document.activeElement,button);
+    button.listeners.click();
+    info.listeners.keydown({key:'Tab',preventDefault(){assert.fail('Tab must remain native');}});
+    info.listeners.focusout({relatedTarget:close}); assert.equal(panel.hidden,false);
+    info.listeners.focusout({relatedTarget:null}); assert.equal(panel.hidden,true);
+  }
+});
+
+test('mouse hover updates ARIA and click pins it; touch requires an explicit tap',async()=>{
+  const {elements}=await render({decision:'NO_TRADE'});
+  const info=find(elements['banknifty-signal'],n=>n.className==='signal-decision-info');
+  const [button,panel]=info.children;
+  info.listeners.pointerenter({pointerType:'touch'}); assert.equal(panel.hidden,true);
+  button.listeners.click(); assert.equal(panel.hidden,false);
+  panel.children[0].listeners.click();
+  info.listeners.focusout({relatedTarget:null});
+  info.listeners.pointerenter({pointerType:'mouse'});
+  assert.equal(panel.hidden,false); assert.equal(button.attrs['aria-expanded'],'true');
+  button.listeners.click(); // Pin a panel that was already opened by hover.
+  info.listeners.pointerleave({pointerType:'mouse'}); assert.equal(panel.hidden,false);
+  button.listeners.click(); assert.equal(panel.hidden,true);
+  info.listeners.pointerenter({pointerType:'mouse'});
+  info.listeners.focusout({relatedTarget:null});
+  assert.equal(button.attrs['aria-expanded'],'false');
+});
+
+test('repeated polling preserves open state, focus and both scroll axes while updating gates',async()=>{
+  const signal={decision:'NO_TRADE',qualification_gates:[{label:'Winning score',actual:50,required:60,status:'BLOCK'}]};
+  const {elements,document,refresh}=await render(signal);
+  const info=find(elements['nifty-signal'],n=>n.className==='signal-decision-info');
+  const [button,panel]=info.children, [close,content]=panel.children;
+  button.listeners.click(); content.focus(); panel.scrollTop=120; content.scrollLeft=80;
+  for(let i=0;i<3;i++) {
+    await refresh({...signal,qualification_gates:[{...signal.qualification_gates[0],actual:51+i}]});
+    assert.equal(find(elements['nifty-signal'],n=>n===info),info);
+    assert.equal(panel.hidden,false); assert.equal(button.attrs['aria-expanded'],'true');
+    assert.equal(document.activeElement,content); assert.equal(panel.scrollTop,120); assert.equal(content.scrollLeft,80);
+    assert.match(text(content),new RegExp(`${51+i} / 60 required`));
+  }
+  close.focus(); await refresh(signal); assert.equal(document.activeElement,close);
+  close.listeners.click(); await refresh(signal);
+  assert.equal(document.activeElement,button); assert.equal(panel.hidden,true);
+  assert.equal(button.attrs['aria-expanded'],'false');
+});
+
+test('popover CSS uses a bounded grid on desktop and viewport inset on mobile without CSS-only hover',()=>{
+  const css=fs.readFileSync('app/static/style.css','utf8');
+  assert.match(css,/\.signal-grid\{position:relative\}/);
+  assert.match(css,/\.signal-info-popover\{[^}]*left:0;right:0;[^}]*width:100%;box-sizing:border-box/);
+  assert.match(css,/\.signal-info-close\{position:sticky;top:0/);
+  assert.match(css,/@media\(max-width:650px\)\{\.signal-info-popover\{position:fixed;left:16px;right:16px;top:16px/);
+  assert.match(css,/max-height:calc\(100dvh - 32px\)/);
+  assert.doesNotMatch(css,/\.signal-decision-info:hover/);
 });

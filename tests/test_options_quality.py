@@ -82,7 +82,7 @@ def test_production_chains_keep_all_usable_components(index, expected, non_fresh
         assert 0 < component_weights['pcr_confirmation'] < 6
         assert score.bullish_points > 9 and score.bearish_points == 0
     result = SignalEngine().decide(replace(ready(index=index), options=summary))
-    assert result.decision == 'CALL' and result.confidence > 70
+    assert result.decision == 'CALL' and result.confidence > 60
     gates = {g['key']: g for g in result.qualification_gates}
     assert gates['option_coverage']['status'] == gates['full_chain_fresh']['status'] == 'INFO'
     assert gates['options_signal_data']['status'] == 'PASS'
@@ -109,7 +109,9 @@ def test_sparse_chain_scales_broad_components_instead_of_claiming_full_budget():
     assert score.direction == 'bullish'
     result = SignalEngine().decide(replace(ready(), options=summary))
     assert result.decision == 'NO_TRADE'
-    assert 'Winning score below minimum' in result.data_quality['blocking_reasons']
+    assert 69 < result.bullish_score < 70
+    assert len(result.aligned_categories) == 3
+    assert result.data_quality['blocking_reasons'] == ('Fewer than minimum aligned categories',)
 
 
 def test_component_population_scaling_has_no_hard_global_threshold():
@@ -146,7 +148,7 @@ def test_atm_freshness_is_independent_even_at_high_coverage(stale_sides, weight)
     assert summary['coverage']['percent'] >= 99
     scored = SignalEngine().options(summary)
     assert availability(scored)['atm_behavior'] == weight
-    assert scored.available_weight == 21+weight
+    assert scored.available_weight == pytest.approx(15*106/107 + 4*106/107 + 2*20/21 + weight)
     for side in stale_sides:
         assert not scored.component_availability['atm_behavior']['sides'][side.lower()]['usable']
 
@@ -174,7 +176,7 @@ def test_each_ratio_uses_its_own_paired_population():
     assert summary['pcr_oi'] == 2 and summary['near_atm_pcr_oi'] == 2
     assert summary['pcr_quality']['pcr_oi']['usable_contracts'] == 212
     score = SignalEngine().options(summary)
-    assert availability(score)['pcr_confirmation'] == 4
+    assert availability(score)['pcr_confirmation'] == pytest.approx(2*106/107 + 2)
     assert score.component_availability['pcr_confirmation']['usable_ratios'] == 2
 
 
@@ -208,15 +210,104 @@ def test_missing_walls_remove_only_wall_budget_and_case_b_sums_to_23_5():
     assert scored.available_weight == 23.5
 
 
-def test_only_atm_data_is_9_points_and_naturally_cannot_qualify():
+def test_only_atm_data_keeps_9_points_but_cannot_supply_fourth_alignment():
     summary = summarize(chain())
     data = {k: summary[k] for k in ('atm_ce', 'atm_pe', 'timestamp')}
     scored = SignalEngine().options(data)
     assert scored.available_weight == scored.bullish_points == 9
     result = SignalEngine().decide(replace(ready(), options=data))
-    assert result.bullish_score == 69 and len(result.aligned_categories) == 4
+    assert result.bullish_score == 69 and len(result.aligned_categories) == 3
     assert result.decision == 'NO_TRADE'
-    assert result.data_quality['blocking_reasons'] == ('Winning score below minimum',)
+    assert result.confidence == 0
+    assert result.data_quality['blocking_reasons'] == ('Fewer than minimum aligned categories',)
+
+
+@pytest.mark.parametrize('bullish', [True, False])
+@pytest.mark.parametrize('case,points,aligns', [
+    ('unavailable', 0, False), ('one_atm', 4.5, False), ('both_atm', 9, False),
+    ('atm_and_pcr', 15, False), ('flow_only', 10.5, False), ('neutral_flow', 9, False),
+    ('boundary', 10.5, False), ('meaningful', 14.25, True), ('full', 30, True),
+])
+def test_options_alignment_uses_independent_evidence_without_erasing_scores(bullish, case, points, aligns):
+    sample = ready(bullish)
+    full = sample.options
+    data = {'timestamp': sample.as_of, 'evidence_fresh': True}
+    if case in ('one_atm', 'both_atm', 'atm_and_pcr', 'neutral_flow', 'boundary', 'meaningful'):
+        data['atm_ce'] = full['atm_ce']
+    if case in ('both_atm', 'atm_and_pcr', 'neutral_flow', 'boundary', 'meaningful'):
+        data['atm_pe'] = full['atm_pe']
+    if case in ('flow_only', 'neutral_flow', 'boundary', 'meaningful'):
+        fraction = {'boundary': 1/7, 'meaningful': .5}.get(case, 1)
+        data['positioning_quality'] = {'call': fraction, 'put': fraction, 'call_expected': 1, 'put_expected': 1}
+        if case != 'neutral_flow':
+            side = 'put' if bullish else 'call'
+            data[side+'_writing_zones'] = full[side+'_writing_zones']
+    if case == 'atm_and_pcr':
+        data.update({key: full[key] for key in ('pcr_oi', 'pcr_volume', 'near_atm_pcr_oi', 'pcr_quality')})
+    if case == 'full':
+        data = full
+    before = deepcopy(data)
+    result = SignalEngine().decide(replace(sample, options=data))
+    score = result.category_scores['options_positioning']
+    assert (score.bullish_points if bullish else score.bearish_points) == points
+    assert (result.bullish_score if bullish else result.bearish_score) == 60+points
+    assert len(result.aligned_categories) == (4 if aligns else 3)
+    assert result.decision == (('CALL' if bullish else 'PUT') if aligns else 'NO_TRADE')
+    gates = {gate['key']: gate for gate in result.qualification_gates}
+    assert gates['minimum_score']['passed'] is True
+    assert gates['minimum_aligned']['passed'] is aligns
+    assert result.data_quality['options_quality']['alignment']['eligible'] is aligns
+    assert score.available_weight <= 30
+    assert data == before
+
+
+@pytest.mark.parametrize('bullish', [True, False])
+@pytest.mark.parametrize('fraction', [.0001, .001, .01])
+def test_extremely_sparse_broad_evidence_stays_proportional_without_alignment(bullish, fraction):
+    sample = ready(bullish)
+    for key in ('positioning_quality', 'oi_quality'):
+        sample.options[key].update(call=fraction, put=fraction)
+    for quality in sample.options['pcr_quality'].values():
+        quality['paired_strikes'] = fraction
+    for with_atm in (True, False):
+        if not with_atm:
+            sample.options.update(atm_ce=None, atm_pe=None)
+        result = SignalEngine().decide(sample)
+        expected = (9 if with_atm else 0) + 21*fraction
+        assert (result.bullish_score if bullish else result.bearish_score) == pytest.approx(60+expected)
+        assert result.category_scores['options_positioning'].available_weight == pytest.approx(expected)
+        assert result.decision == 'NO_TRADE' and len(result.aligned_categories) == 3
+        assert result.data_quality['blocking_reasons'] == ('Fewer than minimum aligned categories',)
+
+
+@pytest.mark.parametrize('bullish', [True, False])
+def test_contradictory_and_neutral_options_cannot_align_even_with_full_availability(bullish):
+    sample = ready(bullish)
+    opposite = ready(not bullish).options
+    result = SignalEngine().decide(replace(sample, options=opposite))
+    assert result.decision == 'NO_TRADE' and len(result.aligned_categories) == 3
+    assert 'Major category contradiction: options_positioning' in result.contradictions
+    neutral = sample.options
+    for side in ('call', 'put'):
+        neutral[side+'_writing_zones'] = []
+    for side in ('ce', 'pe'):
+        neutral['atm_'+side]['positioning'] = 'NEUTRAL'
+    neutral.update(spot=100, pcr_oi=1, pcr_volume=1, near_atm_pcr_oi=1)
+    result = SignalEngine().decide(sample)
+    score = result.category_scores['options_positioning']
+    assert score.available_weight == 30 and score.bullish_points == score.bearish_points == 0
+    assert result.decision == 'NO_TRADE' and len(result.aligned_categories) == 3
+
+
+def test_alignment_budget_is_derived_from_configured_components():
+    sample = ready()
+    sample.options.update(call_oi_wall=None, pcr_oi=None, pcr_volume=None, near_atm_pcr_oi=None)
+    sample.options['positioning_quality'].update(call=.1, put=.1)
+    config = SignalConfig(options_parts=(.2, .45, .15, .2))
+    result = SignalEngine(config).decide(sample)
+    alignment = result.data_quality['options_quality']['alignment']
+    assert alignment['single_component_budget'] == 13.5
+    assert alignment['non_pcr_net_points'] == 14.1 and alignment['eligible']
 
 
 def test_partial_positioning_never_invents_a_missing_side_or_calls_oi_additions_writing():
@@ -225,7 +316,7 @@ def test_partial_positioning_never_invents_a_missing_side_or_calls_oi_additions_
         if row['option_type'] == 'PE':
             row.update(price_change_percent=None, positioning='UNAVAILABLE')
     summary = summarize(rows)
-    assert summary['positioning_quality'] == {'call': 107, 'put': 0}
+    assert summary['positioning_quality'] == {'call': 107, 'put': 0, 'call_expected': 107, 'put_expected': 107}
     assert summary['put_writing_zones'] == summary['put_unwinding_zones'] == []
     assert summary['call_writing_zones'] == []  # Calls have rising price AND OI.
     score = SignalEngine().options(summary)
@@ -310,7 +401,7 @@ def test_snapshot_age_gate_uses_component_observation_not_rest_completion():
 
 def test_thresholds_breadth_expiry_and_other_budgets_unchanged():
     config = SignalConfig()
-    assert (config.minimum_score, config.minimum_aligned, config.minimum_separation) == (70, 4, 15)
+    assert (config.minimum_score, config.minimum_aligned, config.minimum_separation) == (60, 4, 15)
     assert (config.minimum_breadth_coverage, config.minimum_option_coverage) == (90, 95)
     assert (config.price_weight, config.options_weight, config.breadth_weight, config.volatility_weight, config.futures_weight) == (30,30,15,10,15)
     sample = replace(ready(), options=summarize(chain(non_fresh=48)))

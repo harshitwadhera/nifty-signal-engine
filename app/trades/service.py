@@ -133,6 +133,10 @@ class TradeService:
             row, connected = self.market(index)
             self.process({**row, 'trading_symbol': SYMBOLS[index]}, connected, self.clock())
 
+    def by_signal_ids(self, signal_ids):
+        with self.lock:
+            return self.journal.by_signal_ids(signal_ids)
+
     def active(self):
         with self.lock:
             result = self.journal.listing(active=True, limit=2)

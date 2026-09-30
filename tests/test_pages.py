@@ -19,7 +19,7 @@ class Page(HTMLParser):
 
 
 @pytest.mark.parametrize('route,title,scripts,present,absent', [
-    ('/', 'Trading Dashboard', ['market_hours.js', 'dashboard.js', 'charts.js', 'signals.js', 'trades.js'],
+    ('/', 'Trading Dashboard', ['market_hours.js', 'dashboard.js', 'charts.js', 'signals.js', 'trades.js', 'opportunities.js'],
      ['nifty-chart-frame', 'nifty-signal', 'nifty-trade', 'status'], ['nifty-structure', 'nifty-options']),
     ('/analysis', 'Market Analysis', ['market_hours.js', 'structure.js', 'options.js'],
      ['nifty-structure', 'nifty-options', 'nifty-options-expiry'], ['nifty-chart-frame', 'nifty-signal', 'nifty-trade', 'status']),

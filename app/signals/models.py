@@ -47,7 +47,7 @@ class ScoreResult:
     bearish_points: float
     available_weight: float
     config: "SignalConfig"
-    version: str = "5.6.1"
+    version: str = "5.7.0"
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,7 @@ class SignalConfig:
     breadth_parts: tuple = (.60, .20, .20)
     breadth_positive: float = 60
     breadth_negative: float = 40
-    minimum_score: float = 70
+    minimum_score: float = 60
     minimum_aligned: int = 4
     minimum_separation: float = 15
     # Deprecated for qualification; retained as a diagnostic reference only.

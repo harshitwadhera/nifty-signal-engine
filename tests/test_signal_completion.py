@@ -39,7 +39,7 @@ def test_creation_evidence_is_immutable_and_complete(tracking):
     assert original['scores']['confidence'] == 90
     assert original['scores']['category_scores']['price_trend']['bullish_points'] == 30
     assert original['execution_config']['minimum_t1_rr'] == 1.5
-    assert original['scoring_config']['minimum_score'] == 70
+    assert original['scoring_config']['minimum_score'] == 60
     assert original['option_chain_context']
     newer, quotes = move(sample, rows, 300, 101)
     manager.advance(record.signal_id, newer, quotes, candle(newer))

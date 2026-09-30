@@ -105,8 +105,10 @@ class SignalEngine:
             return min(fractions)
 
         def add(key, label, votes, weight, maximum, reason, **details):
+            bull, bear = t.bull, t.bear
             t.add(label, votes, weight)
             components[key] = dict(available_weight=round(weight if votes else 0, 6),
+                                   bullish_points=round(t.bull-bull, 6), bearish_points=round(t.bear-bear, 6),
                                    maximum_weight=round(maximum, 6), reason=reason, **details)
 
         aggregate_fresh = data.get("evidence_fresh") is True

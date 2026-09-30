@@ -7,6 +7,7 @@
     {day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata'}) : 'Unavailable';
   const categoryLabels = {price_trend: 'Price / Trend', options_positioning: 'Options',
     breadth_constituents: 'Breadth', volatility: 'VIX', futures_structure: 'Futures'};
+  const cards = new Map();
   function table(parent, caption, headings, rows) {
     const wrapper = document.createElement('div'), grid = document.createElement('table');
     wrapper.className = 'signal-table';
@@ -26,6 +27,60 @@
     }
     grid.append(body); wrapper.append(grid); parent.append(wrapper);
   }
+  function qualificationControl(index) {
+    const info = document.createElement('div'); info.className = 'signal-decision-info';
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'signal-info-button';
+    button.textContent = 'ⓘ'; button.id = index + '-qualification-trigger';
+    button.setAttribute('aria-label', index.toUpperCase() + ' qualification details');
+    button.setAttribute('aria-controls', index + '-qualification-panel');
+    const panel = document.createElement('div'); panel.className = 'signal-info-popover';
+    panel.id = index + '-qualification-panel'; panel.setAttribute('role', 'region');
+    panel.setAttribute('aria-labelledby', button.id);
+    const close = document.createElement('button'); close.type = 'button'; close.textContent = 'Close';
+    close.className = 'signal-info-close';
+    const content = document.createElement('div'); content.className = 'signal-table'; content.tabIndex = 0;
+    content.setAttribute('role', 'region'); content.setAttribute('aria-label', 'Qualification gates (scrollable)');
+    panel.append(close, content); info.append(button, panel);
+    let opened = false, pinned = false;
+    function setOpen(value, restoreFocus = false) {
+      opened = value;
+      info.className = value ? 'signal-decision-info open' : 'signal-decision-info';
+      panel.hidden = !value;
+      button.setAttribute('aria-expanded', String(value));
+      if (!value) pinned = false;
+      if (restoreFocus) button.focus({preventScroll: true});
+    }
+    button.addEventListener('click', () => { setOpen(!opened || !pinned); pinned = opened; });
+    close.addEventListener('click', () => setOpen(false, true));
+    info.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && opened) { event.preventDefault(); setOpen(false, true); }
+    });
+    info.addEventListener('pointerenter', event => { if (event.pointerType === 'mouse') setOpen(true); });
+    info.addEventListener('pointerleave', event => {
+      if (event.pointerType === 'mouse' && !pinned && !info.contains(document.activeElement)) setOpen(false);
+    });
+    info.addEventListener('focusout', event => {
+      if (!info.contains(event.relatedTarget)) setOpen(false);
+    });
+    setOpen(false);
+    let previous = '';
+    return {info, update(data) {
+      button.title = data.decision === 'NO_TRADE' ? 'Why no trade' : 'Qualification details';
+      const gates = data.qualification_gates || [];
+      const signature = JSON.stringify([data.decision, gates]);
+      if (signature === previous) return;
+      previous = signature;
+      const top = panel.scrollTop, left = content.scrollLeft;
+      const staging = document.createElement('div');
+      table(staging, data.decision === 'NO_TRADE' ? 'WHY NO TRADE' : 'CURRENT QUALIFICATION',
+        ['Status', 'Gate', 'Observation / Requirement'], gates.length ? gates.map(g =>
+          [g.status, g.label, [g.actual == null ? null : format(g.actual),
+            g.required == null ? null : `${format(g.required)} required`].filter(Boolean).join(' / ') +
+            (g.detail ? ` · ${g.detail}` : '')]) : [['INFO', 'Qualification', 'Waiting for backend gate details']]);
+      content.replaceChildren(staging.firstChild.firstChild);
+      panel.scrollTop = top; content.scrollLeft = left;
+    }};
+  }
   function qualification(parent, data) {
     const selection = data.expiry_selection || {}, policy = selection.analysis_expiry_policy || {};
     const expiry = document.createElement('p'); expiry.className = 'signal-expiry';
@@ -37,12 +92,6 @@
         `${format(score.available_weight)} / ${format(score.maximum_weight)}`]);
     categories.push(['TOTAL', '', current.bullish_score, current.bearish_score, '']);
     table(parent, 'Current category weightage', ['Category', 'Direction', 'Bull', 'Bear', 'Available / Max'], categories);
-    const gates = data.qualification_gates || [];
-    table(parent, data.decision === 'NO_TRADE' ? 'WHY NO TRADE' : 'CURRENT QUALIFICATION',
-      ['Status', 'Gate', 'Observation / Requirement'], gates.length ? gates.map(g =>
-        [g.status, g.label, [g.actual == null ? null : format(g.actual),
-          g.required == null ? null : `${format(g.required)} required`].filter(Boolean).join(' / ') +
-          (g.detail ? ` · ${g.detail}` : '')]) : [['INFO', 'Qualification', 'Waiting for backend gate details']]);
     const note = document.createElement('p'); note.className = 'note';
     note.textContent = 'Scores describe evidence on a 100-point budget. Passing a gate does not predict profitability.';
     if (data.score_basis === 'candidate_creation') note.textContent +=
@@ -59,12 +108,20 @@
     details.append(list); parent.append(details);
   }
   function paint(index, data) {
-    const box = get(index + '-signal'); box.replaceChildren();
+    let card = cards.get(index);
+    if (!card) {
+      const heading = document.createElement('div'), body = document.createElement('div');
+      const control = qualificationControl(index);
+      get(index + '-signal').replaceChildren(heading, control.info, body);
+      card = {heading, body, control}; cards.set(index, card);
+    }
+    const box = card.body;
+    box.replaceChildren(); card.heading.replaceChildren();
     const badge = document.createElement('p');
     badge.className = data.decision === 'NO_TRADE' ? 'signal-neutral' : 'signal-direction';
     badge.textContent = (data.decision || 'NO_TRADE').replaceAll('_', ' ');
-    box.append(badge);
-    qualification(box, data);
+    card.heading.append(badge);
+    qualification(card.heading, data); card.control.update(data);
     const record = data.record, plan = record?.plan, outcome = record?.outcome;
     const trigger = plan?.entry_trigger, option = plan?.option;
     const rows = [

@@ -47,22 +47,32 @@ def test_only_three_categories_aligned():
     assert 'Fewer than minimum aligned categories' in result.data_quality['blocking_reasons']
 
 
-def test_score_below_70_with_four_categories():
+def test_score_below_60_with_four_categories():
     sample = ready()
-    for field in ('opening_range_high', 'previous_day_high', 'previous_day_close'):
-        sample.structure.pop(field)
-    sample.structure.pop('15m')
-    sample.structure.pop('30m')
-    result = SignalEngine().decide(sample)
+    engine = SignalEngine()
+    scores = replace(engine.score(sample), bullish_points=59, bearish_points=0)
+    engine.score = Mock(return_value=scores)
+    result = engine.decide(sample)
     assert len(result.aligned_categories) == 4
-    assert result.bullish_score < 70
+    assert result.bullish_score == 59
     assert result.decision == 'NO_TRADE'
+    assert 'Winning score below minimum' in result.data_quality['blocking_reasons']
+
+
+def test_score_at_60_can_qualify_when_other_gates_pass():
+    sample = ready()
+    engine = SignalEngine()
+    scores = replace(engine.score(sample), bullish_points=60, bearish_points=0)
+    engine.score = Mock(return_value=scores)
+    result = engine.decide(sample)
+    assert result.decision == 'CALL'
+    assert result.confidence == 60
 
 
 def test_separation_gate_independent_of_other_gates():
     # Isolate decision policy with a supplied category result; normal setup tests
     # above exercise scoring end-to-end. Small separation is arithmetically
-    # incompatible with a 70-point winner on a bounded 100-point budget today.
+    # incompatible with a 60-point winner on a bounded 100-point budget today.
     sample = ready()
     engine = SignalEngine()
     scores = replace(engine.score(sample), bullish_points=75, bearish_points=65)
@@ -103,8 +113,8 @@ def test_major_conflicting_evidence_blocks():
     sample.options['call_writing_zones'] = [{'strike': 105, 'oi_change_session': 100}]
     sample.options['atm_pe']['positioning'] = 'LONG_BUILDUP'
     result = SignalEngine().decide(sample)
-    assert result.bullish_score >= 70
-    assert len(result.aligned_categories) == 4
+    assert result.bullish_score >= 60
+    assert len(result.aligned_categories) == 3
     assert result.decision == 'NO_TRADE'
     assert any('Major category contradiction' in reason for reason in result.data_quality['blocking_reasons'])
     assert result.contradictions

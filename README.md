@@ -146,4 +146,4 @@ Use `docker compose down` for a graceful shutdown; it leaves the host data direc
 Options scoring uses independent component availability. Overall chain coverage is
 informational; expand **OPTIONS DATA QUALITY** for ATM, positioning, wall, and PCR
 availability. See [Options component availability](docs/options-component-availability.md)
-for compatibility details and the unchanged qualification thresholds.
+for compatibility details. The winning-score gate is 60/100; category budgets still sum to 100 and the other qualification gates are unchanged.
