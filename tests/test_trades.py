@@ -224,3 +224,47 @@ def test_invalid_confirmation_coordinate_cannot_show_ready(service,confirmation)
     service.test_record['confirmation_price']=confirmation
     setup=service.setup('NIFTY')
     assert not setup['can_confirm'] and setup['setup_state']=='NO_TRADE'
+
+
+def test_opportunity_api_combines_confirmed_signal_with_taken_flag(service):
+    service.start = Mock()
+    service.close = Mock()
+    opportunity = {
+        'signal_id': 'sig-confirmed',
+        'state': 'STOPPED',
+        'confirmation_price': 24910,
+        'outcome': {},
+        'history': [
+            {'state': 'CANDIDATE', 'at': '2026-09-25T10:00:00+05:30'},
+            {'state': 'CONFIRMED', 'at': '2026-09-25T10:05:00+05:30'},
+            {'state': 'STOPPED', 'at': '2026-09-25T10:10:00+05:30'},
+        ],
+        'plan': {
+            'index_name': 'NIFTY',
+            'direction': 'CALL',
+            'entry_trigger': {'level': 24900},
+            'invalidation': {'level': 24800},
+            'target1': {'level': 25000},
+            'target2': {'level': 25100},
+            'option': {'trading_symbol': 'NIFTYTEST'},
+        },
+    }
+    signals = Mock()
+    signals.history.return_value = {'items': [opportunity], 'total': 1, 'limit': 25, 'offset': 0}
+    service.by_signal_ids = Mock(return_value={'sig-confirmed': {
+        'trade_id': 'trade-1',
+        'signal_id': 'sig-confirmed',
+        'status': 'USER_CLOSED',
+        'opened_at': '2026-09-25T10:06:00+05:30',
+        'closed_at': '2026-09-25T10:12:00+05:30',
+    }})
+    app = create_app(Settings(), stream=Mock(), engine=Mock(), options=Mock(), signals=signals, trades=service)
+    with TestClient(app) as client:
+        data = client.get('/api/signals/opportunities').json()
+    signals.history.assert_called_once_with(limit=25, offset=0, index=None, confirmed_only=True)
+    service.by_signal_ids.assert_called_once_with(['sig-confirmed'])
+    assert data['total'] == 1
+    assert data['items'][0]['taken'] is True
+    assert data['items'][0]['confirmed_at'] == '2026-09-25T10:05:00+05:30'
+    assert data['items'][0]['manual_trade']['trade_id'] == 'trade-1'
+    service.journal.close()

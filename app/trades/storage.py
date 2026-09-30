@@ -60,6 +60,16 @@ class TradeJournal:
                      ' ORDER BY opened_at DESC,trade_id LIMIT ? OFFSET ?', (*params, limit, offset))]
         return {'items': items, 'total': total, 'limit': limit, 'offset': offset}
 
+    def by_signal_ids(self, signal_ids):
+        ids = tuple(dict.fromkeys(signal_id for signal_id in signal_ids if isinstance(signal_id, str) and signal_id))
+        if not ids:
+            return {}
+        placeholders = ','.join('?' for _ in ids)
+        with self.lock:
+            rows = self.db.execute(
+                f'SELECT signal_id,payload FROM user_trades WHERE signal_id IN ({placeholders})', ids).fetchall()
+        return {signal_id: json.loads(payload) for signal_id, payload in rows}
+
     def events(self, trade_id):
         with self.lock:
             return [{**json.loads(row[0]), 'acknowledged_at': row[1]} for row in self.db.execute(

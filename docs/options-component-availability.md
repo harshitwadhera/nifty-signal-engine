@@ -1,7 +1,7 @@
 # Options component availability
 
 Branch: `fix/options-component-availability`, based on freshly fetched `origin/main`
-at `79c3140`. Scoring version: `5.6.1`. No merge or deployment is part of this change.
+at `79c3140`. Scoring version: `5.7.0`. No merge or deployment is part of this change.
 
 The old analytics layer required every selected-expiry contract to have a fresh
 price before exposing walls and full-expiry PCR. Its summary `stale` flag also
@@ -72,11 +72,13 @@ fails, the gate blocks. ATM gates are PASS when usable and INFO otherwise; lost
 ATM sides already lose their scoring weight. Final contract selection still
 requires its own fresh liquid option after qualification.
 
-Overall chain coverage and full-chain freshness are INFO. Minimum score 70,
-minimum aligned categories 4, minimum separation 15, breadth coverage 90% with the
-full-index requirement, contradictions, and index/expiry consistency are unchanged.
-ATM-only Options evidence yields at most 30+9+15+15 = 69 directional points with
-all other directional categories full, so it cannot qualify.
+Overall chain coverage and full-chain freshness are INFO. Minimum score is now 60,
+while minimum aligned categories remain 4, minimum separation remains 15, breadth
+coverage remains 90% with the full-index requirement, and contradiction/index/expiry
+checks are unchanged. Category budgets still sum to 100; only the winning-score gate
+was lowered. With the new threshold, ATM-only Options evidence can reach 69 directional
+points when Price, Breadth and Futures are all fully aligned, so it can qualify if every
+other gate also passes.
 
 Illustrative API excerpt (independent broader-component data may differ):
 
@@ -117,9 +119,10 @@ The NIFTY 208/214 and BANKNIFTY 266/314 deterministic fixtures retain 9/9 ATM
 availability, while positioning, wall and PCR budgets scale proportionally with
 their own usable populations. They therefore remain useful instead of collapsing
 to 0/30, but incomplete broad-chain evidence cannot claim the same budget as a
-fully observed chain. A sparse 2/214 fixture with only ATM CE/PE fresh keeps 9/9
-ATM but receives only a small fractional budget for broader components and cannot
-qualify the 70-point signal threshold. No hard global percentage cutoff is used.
+fully observed chain. A sparse 2/214 fixture with only ATM CE/PE fresh keeps 9/9 ATM and receives only a
+small fractional budget for broader components. Under the new 60-point winning-score
+gate, such a snapshot can still qualify when the other three directional categories
+are fully aligned and all remaining gates pass. No hard global percentage cutoff is used.
 Both incomplete fixtures have `full_chain_fresh=false` and unavailable max pain.
 
 ## Diagnostics and review

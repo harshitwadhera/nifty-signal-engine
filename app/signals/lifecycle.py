@@ -99,7 +99,8 @@ class SignalJournal:
         return {'record': json.loads(row[0]), 'events': events,
                 'creation_explanation': events[0]['explanation'] if events else None}
 
-    def history(self, limit=25, offset=0, index=None, state=None, direction=None, date_from=None, date_to=None):
+    def history(self, limit=25, offset=0, index=None, state=None, direction=None, date_from=None, date_to=None,
+                confirmed_only=False):
         conditions, values = [], []
         for column, value in (('index_name', index), ('state', state), ('direction', direction)):
             if value is not None:
@@ -109,6 +110,12 @@ class SignalJournal:
             if value is not None:
                 conditions.append('substr(created_at,1,10)'+op+'?')
                 values.append(str(value))
+        if confirmed_only:
+            conditions.append("""EXISTS (
+                SELECT 1 FROM signal_events
+                WHERE signal_events.signal_id=signals.signal_id
+                  AND signal_events.state='CONFIRMED'
+            )""")
         where = ' WHERE '+' AND '.join(conditions) if conditions else ''
         total = self.db.execute('SELECT count(*) FROM signals'+where, values).fetchone()[0]
         rows = self.db.execute('SELECT record FROM signals'+where+' ORDER BY created_at DESC, signal_id DESC LIMIT ? OFFSET ?',

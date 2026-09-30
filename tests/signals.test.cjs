@@ -2,7 +2,9 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
-function node() { return {textContent:'', className:'', children:[], append(...v){this.children.push(...v);}, replaceChildren(...v){this.children=v;}}; }
+function node() { return {textContent:'', className:'', children:[], listeners:{}, attrs:{},
+  append(...v){this.children.push(...v);}, replaceChildren(...v){this.children=v;},
+  addEventListener(event,action){this.listeners[event]=action;}, setAttribute(key,value){this.attrs[key]=value;}}; }
 function text(n) {return [n.textContent, ...n.children.map(text)].join(' ');}
 async function render(signal, ok=true) {
   const elements={}, calls=[];
@@ -54,7 +56,7 @@ test('both indices display backend expiry policy, weightage and independent qual
       code:'NIFTY_NEXT_WEEK_EXPIRY',label:'Next-week expiry',reason:'Current-week expiry skipped for Monday/Tuesday analysis'}},
     category_scores:{options_positioning:{direction:'unavailable',bullish_points:0,bearish_points:0,available_weight:0,maximum_weight:30},
       breadth_constituents:{direction:'bearish',bullish_points:0,bearish_points:9,available_weight:12,maximum_weight:15}},
-    qualification_gates:[{key:'minimum_score',label:'Winning score',status:'BLOCK',passed:false,actual:31.5,required:70},
+    qualification_gates:[{key:'minimum_score',label:'Winning score',status:'BLOCK',passed:false,actual:31.5,required:60},
       {key:'option_coverage',label:'Overall options chain coverage (%)',status:'INFO',passed:null,actual:97.22,detail:'Diagnostic only'},
       {key:'options_signal_data',label:'Options signal data',status:'BLOCK',passed:false,detail:'No current usable component evidence'},
       {key:'entry_window',label:'New-entry window',status:'BLOCK',passed:false,actual:'Closed',required:'09:15–15:00 IST'},
@@ -64,7 +66,7 @@ test('both indices display backend expiry policy, weightage and independent qual
     const content=text(elements[index+'-signal']);
     for (const label of ['Analysis expiry: 06 Oct 2026','Next-week expiry','Current-week expiry skipped',
       'Current category weightage','Available / Max','0 / 30','12 / 15','TOTAL','WHY NO TRADE',
-      'BLOCK Winning score 31.5 / 70 required','INFO Overall options chain coverage (%) 97.22',
+      'BLOCK Winning score 31.5 / 60 required','INFO Overall options chain coverage (%) 97.22',
       'BLOCK Options signal data','No current usable component evidence','Closed / 09:15–15:00 IST required',
       'Outside new-entry window','Evidence','Contradictions','Data quality']) assert.ok(content.includes(label), label);
   }
@@ -124,4 +126,20 @@ test('partial Options weights and current component diagnostics stay usable belo
   assert.ok(details && !details.open);
   assert.ok(!content.includes('[object Object]'));
   assert.deepEqual(calls,['/api/signals/current']);
+});
+
+
+test('qualification details are kept behind the compact info control',async()=>{
+  const {elements}=await render({decision:'NO_TRADE',qualification_gates:[
+    {label:'Winning score',status:'BLOCK',actual:55,required:60,detail:'Below threshold'}]});
+  const panel=elements['nifty-signal'];
+  const info=panel.children.find(n=>n.className==='signal-decision-info');
+  assert.ok(info);
+  assert.equal(info.children[0].textContent,'ⓘ');
+  assert.match(text(info),/WHY NO TRADE/);
+  assert.match(text(info),/Winning score/);
+  assert.equal(info.children[0].attrs['aria-expanded'],'false');
+  info.children[0].listeners.click();
+  assert.match(info.className,/open/);
+  assert.equal(info.children[0].attrs['aria-expanded'],'true');
 });

@@ -112,7 +112,7 @@ def decide(snapshot, scores, config):
               snapshot.options.get("selected_expiry"), selection.get("analysis_expiry"),
               "Analysis expiry unavailable or differs from scoring expiry")
     quality["blocking_reasons"] = tuple(issues)
-    quality["score_version"] = "5.6.1"
+    quality["score_version"] = "5.7.0"
     quality["config"] = asdict(config)
     # Confidence is evidence strength on the original 100-point budget, not a
     # calibrated probability. Blocked decisions deliberately report zero.

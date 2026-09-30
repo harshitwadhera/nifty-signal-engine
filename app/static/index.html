@@ -10,6 +10,7 @@
   <script src="/static/charts.js" defer></script>
   <script src="/static/signals.js" defer></script>
   <script src="/static/trades.js" defer></script>
+  <script src="/static/opportunities.js" defer></script>
 </head>
 <body><main>
   <nav class="page-nav" aria-label="Main navigation">
@@ -66,5 +67,15 @@
     <article><h2>NIFTY signal</h2><div id="nifty-trade"></div><div id="nifty-signal" aria-live="polite">Waiting for observations…</div></article>
     <article><h2>BANK NIFTY signal</h2><div id="banknifty-trade"></div><div id="banknifty-signal" aria-live="polite">Waiting for observations…</div></article>
   </div>
+  <section class="opportunity-history-section" aria-labelledby="opportunity-history-title">
+    <div class="opportunity-history-heading">
+      <div>
+        <h2 id="opportunity-history-title">Trade Opportunity History</h2>
+        <p class="note">Only confirmed / READY model opportunities are listed. Taken = YES only when you recorded “I TOOK THIS TRADE”.</p>
+      </div>
+      <p id="opportunity-history-status" class="note" role="status" aria-live="polite"></p>
+    </div>
+    <div id="opportunity-history">Loading confirmed opportunities…</div>
+  </section>
   <p class="note">Normal automatic polling runs Monday–Friday from 09:00:00 inclusive to 15:40:00 exclusive IST (Asia/Kolkata). Dashboard and trade-monitor data poll every 2 seconds; charts and signals poll every 5 seconds. Outside this window, active-trade checks continue every 2 seconds until closure, and retry while trade state is unverified after loading or confirming a trade; unrelated trade setups do not poll. Each section loads once on opening, and manual controls remain available at any time. Chart timeframe changes and Refresh chart fetch immediately, including outside market hours. A started STOP alarm continues until acknowledged or the trade is closed while this page remains open. NSE holidays are not yet determined by an exchange calendar.</p>
 </main></body></html>

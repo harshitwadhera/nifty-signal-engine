@@ -82,7 +82,7 @@ def test_production_chains_keep_all_usable_components(index, expected, non_fresh
         assert 0 < component_weights['pcr_confirmation'] < 6
         assert score.bullish_points > 9 and score.bearish_points == 0
     result = SignalEngine().decide(replace(ready(index=index), options=summary))
-    assert result.decision == 'CALL' and result.confidence > 70
+    assert result.decision == 'CALL' and result.confidence > 60
     gates = {g['key']: g for g in result.qualification_gates}
     assert gates['option_coverage']['status'] == gates['full_chain_fresh']['status'] == 'INFO'
     assert gates['options_signal_data']['status'] == 'PASS'
@@ -108,8 +108,9 @@ def test_sparse_chain_scales_broad_components_instead_of_claiming_full_budget():
     assert 9 < score.available_weight < 10
     assert score.direction == 'bullish'
     result = SignalEngine().decide(replace(ready(), options=summary))
-    assert result.decision == 'NO_TRADE'
-    assert 'Winning score below minimum' in result.data_quality['blocking_reasons']
+    assert result.decision == 'CALL'
+    assert 69 < result.confidence < 70
+    assert not result.data_quality['blocking_reasons']
 
 
 def test_component_population_scaling_has_no_hard_global_threshold():
@@ -208,15 +209,16 @@ def test_missing_walls_remove_only_wall_budget_and_case_b_sums_to_23_5():
     assert scored.available_weight == 23.5
 
 
-def test_only_atm_data_is_9_points_and_naturally_cannot_qualify():
+def test_only_atm_data_is_9_points_and_can_qualify_at_60_with_other_categories_full():
     summary = summarize(chain())
     data = {k: summary[k] for k in ('atm_ce', 'atm_pe', 'timestamp')}
     scored = SignalEngine().options(data)
     assert scored.available_weight == scored.bullish_points == 9
     result = SignalEngine().decide(replace(ready(), options=data))
     assert result.bullish_score == 69 and len(result.aligned_categories) == 4
-    assert result.decision == 'NO_TRADE'
-    assert result.data_quality['blocking_reasons'] == ('Winning score below minimum',)
+    assert result.decision == 'CALL'
+    assert result.confidence == 69
+    assert not result.data_quality['blocking_reasons']
 
 
 def test_partial_positioning_never_invents_a_missing_side_or_calls_oi_additions_writing():
@@ -310,7 +312,7 @@ def test_snapshot_age_gate_uses_component_observation_not_rest_completion():
 
 def test_thresholds_breadth_expiry_and_other_budgets_unchanged():
     config = SignalConfig()
-    assert (config.minimum_score, config.minimum_aligned, config.minimum_separation) == (70, 4, 15)
+    assert (config.minimum_score, config.minimum_aligned, config.minimum_separation) == (60, 4, 15)
     assert (config.minimum_breadth_coverage, config.minimum_option_coverage) == (90, 95)
     assert (config.price_weight, config.options_weight, config.breadth_weight, config.volatility_weight, config.futures_weight) == (30,30,15,10,15)
     sample = replace(ready(), options=summarize(chain(non_fresh=48)))

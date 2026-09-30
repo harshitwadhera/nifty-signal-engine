@@ -136,7 +136,7 @@ Illustrative qualification rows:
 
 | Status | Gate | Observation / Requirement |
 | --- | --- | --- |
-| BLOCK | Winning score | 31.5 / 70 required |
+| BLOCK | Winning score | 31.5 / 60 required |
 | BLOCK | Aligned categories | 3 / 4 required |
 | PASS | Score separation | 31.5 / 15 required |
 | PASS | Structure freshness | Fresh within 60s |

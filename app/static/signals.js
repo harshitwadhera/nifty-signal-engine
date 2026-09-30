@@ -38,11 +38,22 @@
     categories.push(['TOTAL', '', current.bullish_score, current.bearish_score, '']);
     table(parent, 'Current category weightage', ['Category', 'Direction', 'Bull', 'Bear', 'Available / Max'], categories);
     const gates = data.qualification_gates || [];
-    table(parent, data.decision === 'NO_TRADE' ? 'WHY NO TRADE' : 'CURRENT QUALIFICATION',
+    const info = document.createElement('span'); info.className = 'signal-decision-info';
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'signal-info-button';
+    button.textContent = 'ⓘ'; button.title = data.decision === 'NO_TRADE' ? 'Why no trade' : 'Qualification details';
+    button.setAttribute('aria-expanded', 'false');
+    const panel = document.createElement('div'); panel.className = 'signal-info-popover';
+    table(panel, data.decision === 'NO_TRADE' ? 'WHY NO TRADE' : 'CURRENT QUALIFICATION',
       ['Status', 'Gate', 'Observation / Requirement'], gates.length ? gates.map(g =>
         [g.status, g.label, [g.actual == null ? null : format(g.actual),
           g.required == null ? null : `${format(g.required)} required`].filter(Boolean).join(' / ') +
           (g.detail ? ` · ${g.detail}` : '')]) : [['INFO', 'Qualification', 'Waiting for backend gate details']]);
+    button.addEventListener('click', () => {
+      const opened = !info.className.includes('open');
+      info.className = opened ? 'signal-decision-info open' : 'signal-decision-info';
+      button.setAttribute('aria-expanded', opened ? 'true' : 'false');
+    });
+    info.append(button, panel); parent.append(info);
     const note = document.createElement('p'); note.className = 'note';
     note.textContent = 'Scores describe evidence on a 100-point budget. Passing a gate does not predict profitability.';
     if (data.score_basis === 'candidate_creation') note.textContent +=

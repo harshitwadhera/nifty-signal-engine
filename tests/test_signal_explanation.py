@@ -27,7 +27,7 @@ def test_gates_explain_the_authoritative_decision(bullish, direction):
     checks = gates(result)
     assert result.decision == direction
     assert all(g['status'] in ('PASS', 'INFO') for g in checks.values())
-    assert checks['minimum_score']['actual'] == 90 and checks['minimum_score']['required'] == 70
+    assert checks['minimum_score']['actual'] == 90 and checks['minimum_score']['required'] == 60
     assert checks['minimum_aligned']['actual'] == checks['minimum_aligned']['required'] == 4
     assert checks['minimum_separation']['required'] == 15
     assert checks['option_coverage']['status'] == 'INFO' and checks['option_coverage']['required'] is None and checks['breadth_coverage']['required'] == 90

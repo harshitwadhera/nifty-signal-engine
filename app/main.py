@@ -179,6 +179,36 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
         return signal_service().history(limit=limit, offset=offset, index=index.upper() if index else None,
             state=state, direction=direction, date_from=date_from, date_to=date_to)
 
+    @app.get('/api/signals/opportunities')
+    def signal_opportunities(limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0, le=100000),
+                             index: Literal['nifty', 'banknifty'] | None = None):
+        history = signal_service().history(limit=limit, offset=offset,
+            index=index.upper() if index else None, confirmed_only=True)
+        trades = trade_service().by_signal_ids([record.get('signal_id') for record in history['items']])
+        items = []
+        for record in history['items']:
+            confirmed = next((event for event in record.get('history', ()) if event.get('state') == 'CONFIRMED'), None)
+            trade = trades.get(record.get('signal_id'))
+            items.append({
+                'signal_id': record.get('signal_id'),
+                'index_name': (record.get('plan') or {}).get('index_name'),
+                'direction': (record.get('plan') or {}).get('direction'),
+                'confirmed_at': confirmed.get('at') if confirmed else None,
+                'state': record.get('state'),
+                'plan': record.get('plan'),
+                'confirmation_price': record.get('confirmation_price'),
+                'history': record.get('history', ()),
+                'outcome': record.get('outcome', {}),
+                'taken': trade is not None,
+                'manual_trade': None if trade is None else {
+                    'trade_id': trade.get('trade_id'),
+                    'status': trade.get('status'),
+                    'opened_at': trade.get('opened_at'),
+                    'closed_at': trade.get('closed_at'),
+                },
+            })
+        return {**history, 'items': items}
+
     @app.get('/api/signals/nifty')
     def nifty_signal():
         return signal_service().current('NIFTY')

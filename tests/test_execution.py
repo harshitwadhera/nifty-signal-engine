@@ -139,6 +139,19 @@ def test_confirmation_requires_new_complete_closed_bar(lifecycle):
     assert confirmed.confirmed_t1_rr == 4.5
 
 
+def test_confirmed_only_history_excludes_waiting_candidates(lifecycle):
+    manager, sample, rows = lifecycle
+    created = manager.submit(sample, rows)
+    assert created.record.state == 'CANDIDATE'
+    assert manager.journal.history(confirmed_only=True)['total'] == 0
+    newer, quotes = move(sample, rows, 300, 101)
+    confirmed = manager.advance(created.record.signal_id, newer, quotes, candle(newer))
+    assert confirmed.state == 'CONFIRMED'
+    history = manager.journal.history(confirmed_only=True)
+    assert history['total'] == 1
+    assert history['items'][0]['signal_id'] == confirmed.signal_id
+
+
 def test_invalidation_before_confirmation(lifecycle):
     manager, sample, rows = lifecycle
     record = manager.submit(sample, rows).record
