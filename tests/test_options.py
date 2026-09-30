@@ -143,13 +143,13 @@ def test_full_chain_pcr_near_atm_and_coverage(service):
     json.dumps(summary, allow_nan=False)
 
 
-def test_partial_chain_suppresses_full_pcr_walls_max_pain(service):
+def test_partial_chain_retains_usable_pcr_walls_but_not_max_pain(service):
     options, client, clock = service
     client.quote.side_effect = lambda symbols: {s: raw(clock) for s in symbols[1:]}
     options.cycle(force=True)
     summary, _ = options.response("NIFTY")
-    assert summary["pcr_oi"] is None and summary["max_pain"] is None
-    assert summary["call_oi_wall"] is None and summary["stale"]
+    assert summary["pcr_oi"] == 1 and summary["max_pain"] is None
+    assert summary["call_oi_wall"] is not None and summary["stale"]
     assert summary["coverage"]["received_contracts"] < summary["coverage"]["expected_contracts"]
 
 
@@ -410,7 +410,9 @@ def test_failed_refresh_does_not_reuse_old_full_quotes(service):
     assert options.response('NIFTY')[0]['pcr_oi']==2
     client.quote.side_effect=lambda symbols:{s:raw(clock) for s in symbols[1:]}
     options.cycle(force=True)
-    assert options.response('NIFTY')[0]['pcr_oi'] is None
+    summary, rows = options.response('NIFTY')
+    assert summary['pcr_oi'] == 1
+    assert rows[0]['stale'] and rows[0]['ltp'] is None
 
 
 def test_persisted_timestamp_follows_network_fetch(service):

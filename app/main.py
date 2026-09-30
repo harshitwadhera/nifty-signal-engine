@@ -258,6 +258,8 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
                 "last_stream_tick_at": summary["last_stream_tick_at"],
                 "last_full_chain_refresh_at": summary["last_full_chain_refresh_at"],
                 "stale": summary["stale"], "coverage": summary["coverage"],
+                **{key: summary.get(key) for key in ("full_chain_fresh", "near_atm_quality", "atm_quality",
+                                                    "component_availability", "options_total_available_weight")},
                 "total_matching": len(filtered), "offset": offset, "limit": limit,
                 "contracts": filtered[offset:offset+limit]}
 

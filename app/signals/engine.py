@@ -5,6 +5,8 @@ No clocks, I/O, state, SDK classes or downstream lifecycle dependencies.
 from math import isfinite
 from dataclasses import replace
 
+from app.options.quality import BEHAVIOR, atm_quality
+
 from .models import CategoryScore, ScoreResult, SignalConfig, SignalInput
 
 
@@ -87,15 +89,21 @@ class SignalEngine:
 
     def options(self, data):
         t, c = Tally(self.config), self.config
-        if data.get("stale"):
-            return t.result()
         weights = [c.options_weight*p for p in c.options_parts]
+        components = {}
+        def add(key, label, votes, weight, maximum, reason, **details):
+            t.add(label, votes, weight)
+            components[key] = dict(available_weight=round(weight if votes else 0, 6),
+                                   maximum_weight=round(maximum, 6), reason=reason, **details)
+        aggregate_fresh = data.get("evidence_fresh") is True
+        flow_quality = data.get("positioning_quality") or {}
+        flow_ready = aggregate_fresh and all(positive(flow_quality.get(side)) for side in ("call", "put"))
         flow = []
         for side, writing_sign in (("put", 1), ("call", -1)):
             # Additions alone do not identify buyers versus writers. Writing and
             # unwinding are correlated OI evidence and share one fixed budget.
             for suffix, sign in (("writing_zones", writing_sign), ("unwinding_zones", -writing_sign)):
-                rows = data.get(side+"_"+suffix) or []
+                rows = (data.get(side+"_"+suffix) or []) if flow_ready else []
                 valid = [r for r in rows if positive(r.get("strike")) is not None and
                          number(r.get("oi_change_session" if suffix == "writing_zones" else "value")) is not None]
                 valid = [r for r in valid if (r.get("oi_change_session", 0) > 0 if suffix == "writing_zones" else r["value"] < 0)]
@@ -105,24 +113,29 @@ class SignalEngine:
             addition = data.get("highest_"+side+"_oi_addition") or {}
             if positive(addition.get("value")) is not None:
                 t.evidence.append(f"{side} OI additions present; directional only with price/positioning")
-        t.add("Positioning flow", flow, weights[0])
+        add("positioning_flow", "Positioning flow", (flow or [0]) if flow_ready else [], weights[0], weights[0],
+            "Fresh price/OI positioning on both sides" if flow_ready else "Fresh price/OI positioning required on both CALL and PUT sides",
+            usable_call_observations=number(flow_quality.get("call")) or 0, usable_put_observations=number(flow_quality.get("put")) or 0)
         atm_votes = []
-        behavior = {"LONG_BUILDUP": 1, "SHORT_COVERING": 1, "SHORT_BUILDUP": -1, "LONG_UNWINDING": -1, "NEUTRAL": 0}
+        atm_details = {}
         for side, sign in (("ce", 1), ("pe", -1)):
             row = data.get("atm_"+side) or {}
-            iv = number(row.get("iv"))
-            if row.get("stale") or row.get("liquidity_state") not in ("LIQUID", "MODERATE") or (row.get("iv") is not None and (iv is None or not 0 < iv <= c.max_iv)):
-                continue
-            if row.get("positioning") in behavior:
-                atm_votes.append(sign*behavior[row["positioning"]])
-        t.add("Liquid ATM CE/PE behavior", atm_votes, weights[1]*len(atm_votes)/2)
+            atm_details[side] = atm_quality(row, c.max_iv)
+            if atm_details[side]["usable"]:
+                atm_votes.append(sign*BEHAVIOR[row["positioning"]])
+        add("atm_behavior", "Liquid ATM CE/PE behavior", atm_votes, weights[1]*len(atm_votes)/2, weights[1],
+            f"{len(atm_votes)} of 2 ATM sides usable", sides=atm_details)
         spot = positive(data.get("spot"))
         call, put = positive(data.get("call_oi_wall")), positive(data.get("put_oi_wall"))
         # Inside the walls is neutral; wall distance is not an independent trend.
-        t.add("OI wall breakout", self.range_vote(spot, call, put), weights[2])
+        oi_quality = data.get("oi_quality") or {}
+        wall_votes = self.range_vote(spot, call, put) if aggregate_fresh and all(
+            positive(oi_quality.get(side)) for side in ("call", "put")) else []
+        add("oi_wall_breakout", "OI wall breakout", wall_votes, weights[2], weights[2],
+            "Fresh CALL and PUT OI walls and valid range" if wall_votes else "Insufficient valid OI-wall data or range")
         pcr_votes = []
         for field in ("pcr_oi", "pcr_volume", "near_atm_pcr_oi"):
-            value = number(data.get(field))
+            value = number(data.get(field)) if aggregate_fresh else None
             if value is not None and value >= 0:
                 pcr_votes.append(1 if value > c.pcr_bullish else -1 if value < c.pcr_bearish else 0)
         if pcr_votes:
@@ -131,10 +144,14 @@ class SignalEngine:
             aligned = [v if anchor*v > 0 else 0 for v in pcr_votes]
             if any(anchor*v < 0 for v in pcr_votes):
                 t.conflicts.append("PCR conflicts with non-PCR positioning")
-            t.add("PCR confirmation (non-PCR anchor required)", aligned, weights[3]*len(pcr_votes)/3)
+        else:
+            aligned = []
+        add("pcr_confirmation", "PCR confirmation (non-PCR anchor required)", aligned,
+            weights[3]*len(pcr_votes)/3, weights[3], f"{len(pcr_votes)} of 3 ratios usable; confirmation only",
+            usable_ratios=len(pcr_votes))
         if positive(data.get("max_pain")) is not None:
             t.evidence.append("Max pain available as secondary context; no directional points")
-        return t.result()
+        return replace(t.result(), component_availability=components)
 
     def futures(self, data):
         t, c = Tally(self.config), self.config

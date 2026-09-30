@@ -20,12 +20,17 @@ def setup(index="NIFTY", bullish=True):
     side = "put" if bullish else "call"
     options = dict(spot=spot, call_oi_wall=105, put_oi_wall=95,
                    pcr_oi=1.5 if bullish else .5, pcr_volume=1.5 if bullish else .5,
-                   near_atm_pcr_oi=1.5 if bullish else .5, max_pain=100, stale=False)
+                   near_atm_pcr_oi=1.5 if bullish else .5, max_pain=100, stale=False,
+                   evidence_fresh=True, timestamp="2026-09-25T10:00:00+05:30",
+                   positioning_quality={"call": 1, "put": 1}, oi_quality={"call": 1, "put": 1})
     options[side+"_writing_zones"] = [{"strike": 100, "oi_change_session": 1000}]
     options["highest_"+side+"_oi_addition"] = {"strike": 100, "value": 1000}
     for kind in ("ce", "pe"):
         options["atm_"+kind] = {"positioning": "LONG_BUILDUP" if (kind == "ce") == bullish else "SHORT_BUILDUP",
-                              "liquidity_state": "LIQUID", "iv": .2, "stale": False}
+                              "liquidity_state": "LIQUID", "iv": .2, "stale": False,
+                              "ltp": 10, "bid": 9.99, "ask": 10.01, "bid_quantity": 10, "ask_quantity": 10,
+                              "oi": 1000, "oi_change_session": 100, "price_change_percent": 1,
+                              "oi_change_percent": 10}
     return SignalInput(index, "2026-09-25T10:00:00+05:30", structure, options,
                        {"level": 18, "change_percent": 2})
 
@@ -52,7 +57,7 @@ def test_neutral_setup():
     for interval in ('5m', '15m', '30m'):
         data[interval] = {'ema9': 100, 'ema20': 100}
     opts = dict(spot=100, call_oi_wall=105, put_oi_wall=95, pcr_oi=1,
-                pcr_volume=1, near_atm_pcr_oi=1)
+                pcr_volume=1, near_atm_pcr_oi=1, evidence_fresh=True, oi_quality={"call":1,"put":1})
     result = SignalEngine().score(replace(snapshot, options=opts))
     assert all(c.direction == 'neutral' for name, c in result.categories.items() if name != 'breadth_constituents')
     assert result.bullish_points == result.bearish_points == 0
@@ -106,7 +111,7 @@ def test_replay_is_deterministic_and_input_unchanged():
     engine.score(setup(bullish=False))
     assert first == engine.score(sample) == SignalEngine().score(sample)
     assert sample == before
-    assert json.loads(json.dumps(asdict(first), allow_nan=False))['version'] == '5.3.1'
+    assert json.loads(json.dumps(asdict(first), allow_nan=False))['version'] == '5.6.0'
 
 
 def test_ema_budget_is_shared_and_partial_coverage_is_explicit():
@@ -121,7 +126,7 @@ def test_ema_budget_is_shared_and_partial_coverage_is_explicit():
 
 def test_pcr_basis_and_max_pain_cannot_determine_direction():
     result = SignalEngine().score(SignalInput('NIFTY', 'replay',
-        {'futures_basis': 50}, {'pcr_oi': 3, 'pcr_volume': 3, 'near_atm_pcr_oi': 3, 'max_pain': 25000}))
+        {'futures_basis': 50}, {'pcr_oi': 3, 'pcr_volume': 3, 'near_atm_pcr_oi': 3, 'max_pain': 25000, 'evidence_fresh': True}))
     assert result.bullish_points == result.bearish_points == 0
     assert result.categories['options_positioning'].direction == 'neutral'
     assert result.categories['futures_structure'].direction == 'unavailable'
@@ -140,15 +145,17 @@ def test_stale_sources_are_unavailable():
     sample = setup()
     for source in (sample.structure, sample.options, sample.volatility):
         source['stale'] = True
+    sample.options.update(evidence_fresh=False, atm_ce=None, atm_pe=None)
     assert SignalEngine().score(sample).available_weight == 0
 
 
 def test_unwinding_writing_and_liquidity():
     engine = SignalEngine()
-    assert engine.options({'call_unwinding_zones': [{'strike': 100, 'value': -500}]}).direction == 'bullish'
-    assert engine.options({'put_unwinding_zones': [{'strike': 100, 'value': -500}]}).direction == 'bearish'
+    quality = dict(evidence_fresh=True, positioning_quality={'call':1,'put':1})
+    assert engine.options({**quality, 'call_unwinding_zones': [{'strike': 100, 'value': -500}]}).direction == 'bullish'
+    assert engine.options({**quality, 'put_unwinding_zones': [{'strike': 100, 'value': -500}]}).direction == 'bearish'
     assert engine.options({'highest_put_oi_addition': {'strike': 100, 'value': 500}}).direction == 'unavailable'
-    row = {'positioning': 'LONG_BUILDUP', 'liquidity_state': 'POOR'}
+    row = dict(setup().options['atm_ce'], liquidity_state='POOR')
     assert engine.options({'atm_ce': row}).direction == 'unavailable'
     row['liquidity_state'] = 'LIQUID'
     assert engine.options({'atm_ce': row}).direction == 'bullish'

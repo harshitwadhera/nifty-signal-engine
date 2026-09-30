@@ -3,6 +3,7 @@ from datetime import datetime
 from dataclasses import asdict
 
 from .engine import number, positive
+from app.options.state import finite_json
 from .models import DecisionResult
 
 
@@ -36,27 +37,44 @@ def decide(snapshot, scores, config):
     quality = {name: fresh(source, timestamp, snapshot.as_of, config.critical_max_age_seconds)
                for name, source, timestamp in (
                    ("structure_fresh", snapshot.structure, "as_of"),
-                   ("options_fresh", snapshot.options, "last_full_chain_refresh_at"),
                    ("breadth_fresh", snapshot.breadth, "as_of"),
                    ("vix_fresh", snapshot.volatility, "as_of"))}
-    for key, label in (("structure_fresh", "Structure freshness"), ("options_fresh", "Options freshness"),
+    option_score = scores.categories["options_positioning"]
+    # The summary timestamp describes row-level validation at observation time.
+    # REST completion time and full-chain stale are diagnostic, not freshness gates.
+    quality["options_signal_data"] = (option_score.available_weight > 0 and fresh(
+        {"stale": False, "timestamp": snapshot.options.get("timestamp")}, "timestamp",
+        snapshot.as_of, config.critical_max_age_seconds))
+    quality["options_quality"] = {key: snapshot.options.get(key) for key in
+        ("selected_expiry", "coverage", "full_chain_fresh", "near_atm_quality", "pcr_quality", "positioning_quality", "oi_quality")}
+    quality["options_quality"].update(component_availability=option_score.component_availability,
+        atm_quality=option_score.component_availability.get("atm_behavior", {}).get("sides", {}),
+        options_total_available_weight=option_score.available_weight)
+    quality["options_quality"] = finite_json(quality["options_quality"])
+    for key, label in (("structure_fresh", "Structure freshness"), ("options_signal_data", "Options signal data"),
                        ("breadth_fresh", "Breadth freshness"), ("vix_fresh", "VIX freshness")):
-        detail = ("Fresh" if quality[key] else "Full-chain freshness unavailable" if key == "options_fresh"
-                  else "Stale or freshness unavailable")
+        detail = (("Usable component evidence" if quality[key] else "No current usable component evidence")
+                  if key == "options_signal_data" else "Fresh" if quality[key] else "Stale or freshness unavailable")
         gates.append(gate(key, label, quality[key], "fresh" if quality[key] else "stale or unavailable",
                           f"Fresh within {config.critical_max_age_seconds:g}s", detail))
-    if not all(quality.values()):
+    if not all(quality[k] for k in ("structure_fresh", "options_signal_data", "breadth_fresh", "vix_fresh")):
         issues.append("Critical data stale or freshness unavailable")
     quality["critical_values_present"] = all(positive(v) is not None for v in
         (snapshot.structure.get("spot"), snapshot.structure.get("future"), snapshot.volatility.get("level")))
     check("critical_values_present", "Critical values", quality["critical_values_present"],
           quality["critical_values_present"], True, "Critical values unavailable", "Spot, futures and VIX must be positive finite values")
     coverage = snapshot.options.get("coverage") or {}
-    expected, received = number(coverage.get("expected_contracts")), number(coverage.get("received_contracts"))
+    expected, received = number(coverage.get("expected_contracts")), number(coverage.get("fresh_contracts", coverage.get("received_contracts")))
     percent = 100*received/expected if expected is not None and expected > 0 and received is not None and 0 <= received <= expected else None
     quality["option_coverage_percent"] = percent
-    check("option_coverage", "Options coverage (%)", percent is not None and percent >= config.minimum_option_coverage,
-          percent, config.minimum_option_coverage, "Insufficient options-chain coverage")
+    gates.append(gate("option_coverage", "Overall options chain coverage (%)", None, percent,
+                      detail=f"{received:g} / {expected:g} fresh contracts; diagnostic only" if percent is not None
+                      else "Coverage unavailable; diagnostic only"))
+    gates.append(gate("full_chain_fresh", "Full-chain freshness", None, snapshot.options.get("full_chain_fresh"),
+                      detail="Diagnostic only; max pain may be unavailable"))
+    for side, detail in quality["options_quality"]["atm_quality"].items():
+        gates.append(gate("atm_"+side, "ATM "+side.upper()+" data", True if detail["usable"] else None,
+                          detail["liquidity"], detail=detail["reason"]))
     breadth_coverage = number(snapshot.breadth.get("coverage_percent"))
     quality["breadth_coverage_percent"] = breadth_coverage
     check("breadth_coverage", "Breadth coverage (%)",
@@ -94,7 +112,7 @@ def decide(snapshot, scores, config):
               snapshot.options.get("selected_expiry"), selection.get("analysis_expiry"),
               "Analysis expiry unavailable or differs from scoring expiry")
     quality["blocking_reasons"] = tuple(issues)
-    quality["score_version"] = "5.3.1"
+    quality["score_version"] = "5.6.0"
     quality["config"] = asdict(config)
     # Confidence is evidence strength on the original 100-point budget, not a
     # calibrated probability. Blocked decisions deliberately report zero.

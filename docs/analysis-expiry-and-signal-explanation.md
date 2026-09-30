@@ -48,7 +48,8 @@ retained, including later that day. Policy metadata changes from
 
 The automatic REST target, WebSocket strike window, default options response,
 full-chain metrics, ATM behavior, and persisted analysis chain all use
-`analysis_expiry`. Metrics retain their existing complete-REST-chain requirements.
+`analysis_expiry`. Options now use [component availability](options-component-availability.md);
+whole-chain freshness and coverage are diagnostic, while max pain remains strict.
 Fresh streaming overlays remain confined to the same expiry.
 
 `LiveSignals.evaluate()` reads one options response and carries that exact summary
@@ -91,10 +92,10 @@ A partial illustrative signal response:
   },
   "category_scores": {
     "options_positioning": {
-      "direction": "unavailable",
-      "bullish_points": 0,
+      "direction": "bullish",
+      "bullish_points": 16.5,
       "bearish_points": 0,
-      "available_weight": 0,
+      "available_weight": 23.5,
       "maximum_weight": 30,
       "evidence": [],
       "contradictions": []
@@ -103,29 +104,30 @@ A partial illustrative signal response:
   "qualification_gates": [
     {
       "key": "option_coverage",
-      "label": "Options coverage (%)",
-      "passed": true,
-      "status": "PASS",
+      "label": "Overall options chain coverage (%)",
+      "passed": null,
+      "status": "INFO",
       "actual": 97.22222222222223,
-      "required": 95,
-      "detail": null
+      "required": null,
+      "detail": "Diagnostic only"
     },
     {
-      "key": "options_fresh",
-      "label": "Options freshness",
-      "passed": false,
-      "status": "BLOCK",
-      "actual": "stale or unavailable",
+      "key": "options_signal_data",
+      "label": "Options signal data",
+      "passed": true,
+      "status": "PASS",
+      "actual": "fresh",
       "required": "Fresh within 60s",
-      "detail": "Full-chain freshness unavailable"
+      "detail": "Usable component evidence"
     }
   ]
 }
 ```
 
 The backend emits gates from its decision predicates, including score, alignment,
-separation, all four critical freshness checks, critical values, both coverage
-checks, index identity, major contradictions, and analysis expiry consistency.
+separation, current component evidence, other critical freshness checks, critical
+values, breadth coverage, index identity, major contradictions, and analysis expiry
+consistency. Overall option coverage and full-chain freshness are INFO gates.
 The planner uses the same entry-window gate it publishes. Planning/lifecycle
 reasons are exposed separately as PASS, BLOCK, or INFO. The frontend displays
 these fields and does not derive scoring decisions or expiry policy.
@@ -138,18 +140,18 @@ Illustrative qualification rows:
 | BLOCK | Aligned categories | 3 / 4 required |
 | PASS | Score separation | 31.5 / 15 required |
 | PASS | Structure freshness | Fresh within 60s |
-| BLOCK | Options freshness | Full-chain freshness unavailable |
+| PASS | Options signal data | Usable component evidence |
 | PASS | Breadth freshness | Fresh within 60s |
 | PASS | VIX freshness | Fresh within 60s |
 | PASS | Critical values | Spot, futures and VIX present |
-| PASS | Options coverage (%) | 97.22 / 95 required |
+| INFO | Overall options chain coverage (%) | 97.22; diagnostic only |
 | PASS | Breadth coverage (%) | 100 / 90 required; full index |
 | PASS | Major contradictions | None |
 | BLOCK | New-entry window | Outside new-entry window; cutoff 15:00 IST |
 | BLOCK | Signal planning | Outside new-entry window |
 
 The visible category table distinguishes currently available points from configured
-maximum weights: for example Options `0 / 30` and Breadth `12 / 15`. The maximum
+maximum weights: for example Options `23.5 / 30` and Breadth `12 / 15`. The maximum
 weights come from `SignalConfig`. Existing Evidence, Contradictions, Data quality,
 and category details remain available in collapsed sections.
 
@@ -169,7 +171,8 @@ spanning a year. An OptionsService regression verifies unchanged analysis expiry
 across REST refresh, subscriptions, ATM quotes, summary metrics, and persistence
 on Monday and Tuesday without additional quote batches.
 
-Final required suite runs on the implementation:
+Historical required suite runs for the expiry/explanation implementation (see the
+component-availability document for the newer scoring change):
 
 | Command | Passed | Failed | Skipped | Duration |
 | --- | ---: | ---: | ---: | ---: |

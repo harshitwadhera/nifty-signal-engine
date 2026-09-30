@@ -69,7 +69,7 @@
     const trigger = plan?.entry_trigger, option = plan?.option;
     const rows = [
       ['State', data.state || 'No active signal'], ['Confidence (score / 100)', data.confidence],
-      ['Freshness', data.data_quality?.stale ? 'STALE / waiting for complete data' : 'Current observation'],
+      ['Freshness', data.data_quality?.stale ? 'STALE / waiting for usable data' : 'Current observation'],
       ['Score basis', data.score_basis === 'candidate_creation' ? 'Recorded at candidate creation' : 'Current qualification'],
       ['Bullish score', data.bullish_score], ['Bearish score', data.bearish_score],
       ['Entry trigger', trigger ? `${trigger.type} · ${format(trigger.level)} · ${trigger.confirmation} · ${trigger.instrument}` : null],
@@ -96,9 +96,21 @@
     section(box, 'Evidence', data.evidence || []);
     section(box, 'Contradictions', data.contradictions || []);
     const quality = data.data_quality || {};
+    const options = (data.current_qualification || data).data_quality?.options_quality || {};
+    const coverage = options.coverage || {}, near = options.near_atm_quality || {};
+    const optionRows = [`Selected expiry: ${format(options.selected_expiry)}`,
+      `Overall chain: ${format(coverage.fresh_contracts ?? coverage.received_contracts)} / ${format(coverage.expected_contracts)} (${format(coverage.percent)}%) · diagnostic only`,
+      `Full chain fresh: ${options.full_chain_fresh == null ? 'Unavailable' : options.full_chain_fresh ? 'Yes' : 'No'} (informational)`,
+      `Near ATM: ${format(near.fresh_contracts)} / ${format(near.expected_contracts)} (${format(near.percent)}%)`];
+    for (const [side, row] of Object.entries(options.atm_quality || {})) optionRows.push(
+      `ATM ${side.toUpperCase()}: ${row.fresh ? 'Fresh' : 'Stale / unavailable'} · ${row.liquidity} · ${row.reason}`);
+    const labels = {positioning_flow:'Positioning flow', atm_behavior:'ATM behavior', oi_wall_breakout:'OI walls', pcr_confirmation:'PCR'};
+    for (const [key, item] of Object.entries(options.component_availability || {})) optionRows.push(
+      `${labels[key] || key}: ${format(item.available_weight)} / ${format(item.maximum_weight)} ${item.available_weight > 0 ? 'available' : 'unavailable'} · ${item.reason}`);
+    section(box, 'OPTIONS DATA QUALITY', optionRows);
     const qualityRows = [quality.stale ? 'Stale / waiting for fresh data' : 'Current observation'];
     for (const [key, value] of Object.entries(quality)) {
-      if (key === 'config' || key === 'stale') continue;
+      if (key === 'config' || key === 'stale' || key === 'options_quality') continue;
       qualityRows.push(`${key.replaceAll('_', ' ')}: ${Array.isArray(value) ? value.join('; ') || 'None' : format(value)}`);
     }
     section(box, 'Data quality', qualityRows);

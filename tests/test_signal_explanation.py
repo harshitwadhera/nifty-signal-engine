@@ -26,18 +26,18 @@ def test_gates_explain_the_authoritative_decision(bullish, direction):
     result = SignalEngine().decide(ready(bullish))
     checks = gates(result)
     assert result.decision == direction
-    assert all(g['passed'] and g['status'] == 'PASS' for g in checks.values())
+    assert all(g['status'] in ('PASS', 'INFO') for g in checks.values())
     assert checks['minimum_score']['actual'] == 90 and checks['minimum_score']['required'] == 70
     assert checks['minimum_aligned']['actual'] == checks['minimum_aligned']['required'] == 4
     assert checks['minimum_separation']['required'] == 15
-    assert checks['option_coverage']['required'] == 95 and checks['breadth_coverage']['required'] == 90
+    assert checks['option_coverage']['status'] == 'INFO' and checks['option_coverage']['required'] is None and checks['breadth_coverage']['required'] == 90
     assert checks['structure_fresh']['required'] == 'Fresh within 60s'
-    assert {'structure_fresh', 'options_fresh', 'breadth_fresh', 'vix_fresh', 'critical_values_present',
+    assert {'structure_fresh', 'options_signal_data', 'breadth_fresh', 'vix_fresh', 'critical_values_present',
             'major_contradiction', 'index_match'} <= checks.keys()
     json.dumps(asdict(result), allow_nan=False)
 
 
-def test_coverage_pass_and_strict_chain_freshness_block_are_independent(service):
+def test_incomplete_chain_keeps_usable_components_and_informational_coverage(service):
     options, client, clock = service
     complete_quote = client.quote.side_effect
     client.quote.side_effect = lambda symbols: complete_quote(symbols[1:])
@@ -47,25 +47,27 @@ def test_coverage_pass_and_strict_chain_freshness_block_are_independent(service)
     result = SignalEngine().decide(sample)
     checks = gates(result)
     assert summary['stale'] and summary['coverage']['percent'] > 95
-    assert checks['option_coverage']['status'] == 'PASS'
-    assert checks['options_fresh']['status'] == 'BLOCK'
-    assert checks['options_fresh']['detail'] == 'Full-chain freshness unavailable'
-    assert result.category_scores['options_positioning'].available_weight == 0
+    assert checks['option_coverage']['status'] == 'INFO'
+    assert checks['options_signal_data']['status'] == 'PASS'
+    assert checks['full_chain_fresh']['status'] == 'INFO'
+    assert result.category_scores['options_positioning'].available_weight > 0
     assert result.category_scores['options_positioning'].maximum_weight == 30
 
 
-@pytest.mark.parametrize('source,key', [('structure', 'structure_fresh'), ('options', 'options_fresh'),
+@pytest.mark.parametrize('source,key', [('structure', 'structure_fresh'), ('options', 'options_signal_data'),
                                        ('breadth', 'breadth_fresh'), ('volatility', 'vix_fresh')])
 def test_each_freshness_gate_blocks_independently(source, key):
     sample = ready()
     getattr(sample, source)['stale'] = True
+    if source == 'options':
+        sample.options.update(evidence_fresh=False, atm_ce=None, atm_pe=None)
     result = SignalEngine().decide(sample)
     assert gates(result)[key]['status'] == 'BLOCK' and result.decision == 'NO_TRADE'
 
 
 def test_partial_weights_and_configured_maximum_are_distinct():
     sample = ready()
-    sample.options['stale'] = True
+    sample.options.update(evidence_fresh=False, atm_ce=None, atm_pe=None)
     sample.breadth['percent_above_15m_ema20'] = None
     categories = SignalEngine().decide(sample).category_scores
     assert [(categories[name].available_weight, categories[name].maximum_weight) for name in
@@ -86,8 +88,9 @@ def test_gate_failures_match_critical_coverage_and_contradiction_rules():
     sample.structure['future_change_percent'] = -1
     result = SignalEngine().decide(sample)
     checks = gates(result)
-    for key in ('critical_values_present', 'option_coverage', 'breadth_coverage', 'major_contradiction'):
+    for key in ('critical_values_present', 'breadth_coverage', 'major_contradiction'):
         assert checks[key]['status'] == 'BLOCK'
+    assert checks['option_coverage']['status'] == 'INFO'
     assert 'full index unavailable' in checks['breadth_coverage']['detail']
     assert 'futures_structure' in checks['major_contradiction']['actual']
 
@@ -119,7 +122,7 @@ def test_live_api_distinguishes_qualified_score_from_planning_cutoff():
     sample = replace(ready(), as_of=stamp)
     for source in (sample.structure, sample.breadth, sample.volatility):
         source['as_of'] = stamp
-    sample.options.update(last_full_chain_refresh_at=stamp, selected_expiry='2026-10-06', expiry_selection={
+    sample.options.update(timestamp=stamp, last_full_chain_refresh_at=stamp, selected_expiry='2026-10-06', expiry_selection={
         'nearest': '2026-09-29', 'monthly': '2026-09-29', 'analysis_expiry': '2026-10-06',
         'analysis_expiry_policy': {'code': 'NIFTY_NEXT_WEEK_EXPIRY', 'label': 'Next-week expiry',
                                  'reason': 'Current-week expiry skipped for Monday/Tuesday analysis', 'available': True}})
@@ -156,7 +159,7 @@ def test_active_creation_scores_and_expiry_remain_separate_from_current_gates():
     live.lifecycle.planner = SignalPlanner(engine)
     try:
         submission = live.lifecycle.submit(sample, rows)
-        sample.options.update(stale=True, selected_expiry='2026-10-06', expiry_selection={'analysis_expiry': '2026-10-06'})
+        sample.options.update(evidence_fresh=False, atm_ce=None, atm_pe=None, stale=True, selected_expiry='2026-10-06', expiry_selection={'analysis_expiry': '2026-10-06'})
         live._publish('NIFTY', sample, submission)
         data = live.current('NIFTY')
         assert data['score_basis'] == 'candidate_creation'
@@ -164,6 +167,6 @@ def test_active_creation_scores_and_expiry_remain_separate_from_current_gates():
         assert data['current_qualification']['category_scores']['options_positioning']['available_weight'] == 0
         assert data['score_expiry_selection']['analysis_expiry'] == '2026-09-28'
         assert data['expiry_selection']['analysis_expiry'] == '2026-10-06'
-        assert next(g for g in data['qualification_gates'] if g['key'] == 'options_fresh')['status'] == 'BLOCK'
+        assert next(g for g in data['qualification_gates'] if g['key'] == 'options_signal_data')['status'] == 'BLOCK'
     finally:
         live.close()

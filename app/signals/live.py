@@ -79,7 +79,7 @@ class LiveSignals:
         original_scores = (original or {}).get('scores', {})
         quality = dict(scored['data_quality'])
         quality['planning_reasons'] = list(submission.reasons)
-        quality['stale'] = any(not quality.get(k, False) for k in ('structure_fresh', 'options_fresh', 'breadth_fresh', 'vix_fresh'))
+        quality['stale'] = any(not quality.get(k, False) for k in ('structure_fresh', 'options_signal_data', 'breadth_fresh', 'vix_fresh'))
         gates = [*scored['qualification_gates'], self.lifecycle.planner.entry_window_gate(snapshot.as_of),
                  gate('planning', 'Signal planning', True if submission.created else None if active else False,
                       detail='; '.join(submission.reasons) or 'Qualified candidate created')]

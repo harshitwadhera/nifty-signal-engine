@@ -12,7 +12,7 @@ class SignalInput:
     structure: Phase 3's nifty/banknifty entry. options: Phase 4 summary.
     volatility: {level, change_percent?, stale?}. Optional futures context:
     structure.future_change_percent and structure.spot_change_percent.
-    Missing fields are unavailable, never zero. Caller must mark stale sources.
+    Missing fields are unavailable, never zero. Caller must mark stale sources; options use row freshness and derived evidence_fresh.
     """
     index_name: Literal["NIFTY", "BANKNIFTY"]
     as_of: str
@@ -35,6 +35,7 @@ class CategoryScore:
     evidence: tuple[str, ...]
     contradictions: tuple[str, ...]
     maximum_weight: float = 0
+    component_availability: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ class ScoreResult:
     bearish_points: float
     available_weight: float
     config: "SignalConfig"
-    version: str = "5.3.1"
+    version: str = "5.6.0"
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class SignalConfig:
     minimum_score: float = 70
     minimum_aligned: int = 4
     minimum_separation: float = 15
+    # Deprecated for qualification; retained as a diagnostic reference only.
     minimum_option_coverage: float = 95
     minimum_breadth_coverage: float = 90
     contradiction_fraction: float = .25

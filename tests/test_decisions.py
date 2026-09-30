@@ -76,6 +76,8 @@ def test_separation_gate_independent_of_other_gates():
 def test_stale_data(source):
     sample = ready()
     getattr(sample, source)['stale'] = True
+    if source == 'options':
+        sample.options.update(evidence_fresh=False, atm_ce=None, atm_pe=None)
     assert SignalEngine().decide(sample).decision == 'NO_TRADE'
 
 
@@ -87,12 +89,12 @@ def test_timestamps_checked_against_replay_clock(stamp):
 
 
 @pytest.mark.parametrize('received', [94, None, float('nan'), float('inf'), 101])
-def test_insufficient_option_coverage(received):
+def test_option_coverage_is_diagnostic_only(received):
     sample = ready()
     sample.options['coverage']['received_contracts'] = received
     result = SignalEngine().decide(sample)
-    assert result.decision == 'NO_TRADE'
-    assert 'Insufficient options-chain coverage' in result.data_quality['blocking_reasons']
+    assert result.decision == 'CALL'
+    assert next(g for g in result.qualification_gates if g['key'] == 'option_coverage')['status'] == 'INFO'
     json.dumps(asdict(result), allow_nan=False)
 
 

@@ -15,21 +15,45 @@ async function render(data, ok=true, request=null) {
   return {elements,calls};
 }
 test('options shows distinct baselines, local Greeks and full-chain coverage',async()=>{
-  const {elements}=await render({stale:false,selected_expiry:'2026-09-28',expiries:['2026-09-28'],
+  const {elements}=await render({stale:false,options_total_available_weight:30,selected_expiry:'2026-09-28',expiries:['2026-09-28'],
     coverage:{expected_contracts:40,received_contracts:40,percent:100},atm_ce:{iv:.2,delta:.5,oi_change_session:10,oi_change_vs_previous_close:30},atm_pe:null});
   const panel=elements['nifty-options'];
-  assert.equal(panel.children[0].textContent,'FRESH SNAPSHOT');
+  assert.equal(panel.children[0].textContent,'Options signal data: 30 / 30 available');
   const fields=panel.children[1].children.map(n=>n.textContent);
-  assert.ok(fields.includes('Full-expiry OI PCR'));
+  assert.ok(fields.includes('Usable-strike OI PCR'));
   assert.ok(fields.includes('ATM CE ΔOI session'));
   assert.ok(fields.includes('ATM CE ΔOI vs previous close'));
   assert.ok(fields.includes('20'));
   assert.ok(fields.includes('Unavailable'));
   assert.match(panel.children[2].textContent,/40\/40/);
 });
-test('incomplete options visibly marked stale',async()=>{
+test('absent component diagnostics do not imply usable signal data',async()=>{
   const {elements}=await render({stale:true,coverage:{expected_contracts:100,received_contracts:20,percent:20}});
-  assert.match(elements['banknifty-options'].children[0].textContent,/INCOMPLETE/);
+  assert.match(elements['banknifty-options'].children[0].textContent,/unavailable/);
+});
+
+test('partial chain has usable badge and collapsed component quality with safe reasons',async()=>{
+  const reason='<img src=x onerror=alert(1)>';
+  const {elements,calls}=await render({stale:true,full_chain_fresh:false,options_total_available_weight:23.5,
+    coverage:{expected_contracts:314,fresh_contracts:266,percent:84.7},
+    near_atm_quality:{expected_contracts:42,fresh_contracts:42,percent:100},
+    atm_quality:{ce:{fresh:true,liquidity:'LIQUID',reason:'Fresh'},pe:{fresh:true,liquidity:'LIQUID',reason:'Fresh'}},
+    component_availability:{atm_behavior:{available_weight:9,maximum_weight:9,reason:'Both sides usable'},
+      positioning_flow:{available_weight:10.5,maximum_weight:10.5,reason:'Both sides usable'},
+      oi_wall_breakout:{available_weight:0,maximum_weight:4.5,reason},
+      pcr_confirmation:{available_weight:4,maximum_weight:6,reason:'2 of 3 ratios usable'}}});
+  const panel=elements['banknifty-options'];
+  assert.equal(panel.children[0].textContent,'Options signal data: 23.5 / 30 available');
+  assert.equal(panel.children[0].className,'live');
+  assert.match(panel.children[2].textContent,/266\/314.*84.7%.*diagnostic only/);
+  const details=panel.children[3];
+  assert.equal(details.children[0].textContent,'OPTIONS DATA QUALITY');
+  assert.ok(!details.open);
+  const content=details.children[1].children.map(n=>n.textContent).join(' ');
+  for (const value of ['Full chain fresh: No','ATM CE: Fresh','ATM PE: Fresh','LIQUID','9 / 9 available',
+    '10.5 / 10.5 available','0 / 4.5 unavailable','4 / 6 available',reason]) assert.ok(content.includes(value),value);
+  assert.equal(calls.length,2);
+  assert.ok(!fs.readFileSync('app/static/options.js','utf8').includes('innerHTML'));
 });
 
 test('analysis shows manual versus automatic expiry context and existing writing/unwinding metrics',async()=>{

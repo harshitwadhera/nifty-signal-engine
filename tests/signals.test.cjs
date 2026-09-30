@@ -55,8 +55,8 @@ test('both indices display backend expiry policy, weightage and independent qual
     category_scores:{options_positioning:{direction:'unavailable',bullish_points:0,bearish_points:0,available_weight:0,maximum_weight:30},
       breadth_constituents:{direction:'bearish',bullish_points:0,bearish_points:9,available_weight:12,maximum_weight:15}},
     qualification_gates:[{key:'minimum_score',label:'Winning score',status:'BLOCK',passed:false,actual:31.5,required:70},
-      {key:'option_coverage',label:'Options coverage (%)',status:'PASS',passed:true,actual:97.22,required:95},
-      {key:'options_fresh',label:'Options freshness',status:'BLOCK',passed:false,detail:'Full-chain freshness unavailable'},
+      {key:'option_coverage',label:'Overall options chain coverage (%)',status:'INFO',passed:null,actual:97.22,detail:'Diagnostic only'},
+      {key:'options_signal_data',label:'Options signal data',status:'BLOCK',passed:false,detail:'No current usable component evidence'},
       {key:'entry_window',label:'New-entry window',status:'BLOCK',passed:false,actual:'Closed',required:'09:15–15:00 IST'},
       {key:'planning',label:'Signal planning',status:'BLOCK',passed:false,detail:'Outside new-entry window'}],
     evidence:['Evidence item'],contradictions:['Contradiction item'],data_quality:{stale:true}});
@@ -64,8 +64,8 @@ test('both indices display backend expiry policy, weightage and independent qual
     const content=text(elements[index+'-signal']);
     for (const label of ['Analysis expiry: 06 Oct 2026','Next-week expiry','Current-week expiry skipped',
       'Current category weightage','Available / Max','0 / 30','12 / 15','TOTAL','WHY NO TRADE',
-      'BLOCK Winning score 31.5 / 70 required','PASS Options coverage (%) 97.22 / 95 required',
-      'BLOCK Options freshness','Full-chain freshness unavailable','Closed / 09:15–15:00 IST required',
+      'BLOCK Winning score 31.5 / 70 required','INFO Overall options chain coverage (%) 97.22',
+      'BLOCK Options signal data','No current usable component evidence','Closed / 09:15–15:00 IST required',
       'Outside new-entry window','Evidence','Contradictions','Data quality']) assert.ok(content.includes(label), label);
   }
 });
@@ -87,7 +87,7 @@ test('current gates and table use current scores while active creation evidence 
     category_scores:{options_positioning:{direction:'bullish',bullish_points:30,bearish_points:0,available_weight:30,maximum_weight:30}},
     current_qualification:{bullish_score:20,bearish_score:0,category_scores:{options_positioning:{direction:'unavailable',
       bullish_points:0,bearish_points:0,available_weight:0,maximum_weight:30}}},
-    qualification_gates:[{label:'Options freshness',status:'BLOCK',detail:'Stale'}]});
+    qualification_gates:[{label:'Options signal data',status:'BLOCK',detail:'Stale'}]});
   const content=text(elements['nifty-signal']);
   assert.match(content,/Options unavailable 0 0 0 \/ 30/);
   assert.match(content,/TOTAL  20 0/);
@@ -103,4 +103,25 @@ test('missing analysis expiry is visibly unavailable and backend policy text sta
   assert.ok(content.includes('Analysis expiry: Unavailable'));
   assert.ok(content.includes(reason));
   assert.ok(content.includes('INFO Qualification Waiting for backend gate details'));
+});
+
+test('partial Options weights and current component diagnostics stay usable below 95 percent',async()=>{
+  const {elements,calls}=await render({decision:'CALL',data_quality:{stale:false},
+    current_qualification:{category_scores:{options_positioning:{direction:'bullish',bullish_points:16.5,
+      bearish_points:0,available_weight:23.5,maximum_weight:30}},data_quality:{options_quality:{
+      coverage:{expected_contracts:214,fresh_contracts:208,percent:97.2},full_chain_fresh:false,
+      atm_quality:{ce:{fresh:true,liquidity:'LIQUID',reason:'Usable'},pe:{fresh:true,liquidity:'LIQUID',reason:'Usable'}},
+      component_availability:{atm_behavior:{available_weight:9,maximum_weight:9,reason:'Both sides usable'},
+        oi_wall_breakout:{available_weight:0,maximum_weight:4.5,reason:'Insufficient valid OI-wall data'},
+        pcr_confirmation:{available_weight:4,maximum_weight:6,reason:'2 of 3 ratios usable'}}}}},
+    qualification_gates:[{label:'Overall options chain coverage (%)',status:'INFO',actual:84.7,detail:'Diagnostic only'},
+      {label:'Options signal data',status:'PASS',detail:'Usable component evidence'}]});
+  const panel=elements['nifty-signal'], content=text(panel);
+  for (const value of ['Options bullish 16.5 0 23.5 / 30','208 / 214 (97.2%)','Full chain fresh: No',
+    'ATM CE: Fresh','ATM PE: Fresh','ATM behavior: 9 / 9 available','OI walls: 0 / 4.5 unavailable',
+    'PCR: 4 / 6 available','INFO Overall options chain coverage (%) 84.7','PASS Options signal data']) assert.ok(content.includes(value),value);
+  const details=panel.children.find(n=>n.children[0]?.textContent==='OPTIONS DATA QUALITY');
+  assert.ok(details && !details.open);
+  assert.ok(!content.includes('[object Object]'));
+  assert.deepEqual(calls,['/api/signals/current']);
 });

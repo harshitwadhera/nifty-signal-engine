@@ -13,7 +13,11 @@ class JsonFormatter(logging.Formatter):
         # Safe operational diagnostics only. Never add credentials, tokens,
         # callback URLs, request inputs, or exception bodies here.
         for key in ("index", "expiry", "expected_contracts", "returned_contracts",
-                    "fresh_contracts", "missing_contracts", "coverage_percent"):
+                    "fresh_contracts", "unreturned_contracts", "non_fresh_contracts", "coverage_percent",
+                    "near_atm_expected", "near_atm_fresh", "atm_ce_fresh", "atm_pe_fresh",
+                    "atm_ce_liquidity", "atm_pe_liquidity", "positioning_available_weight",
+                    "atm_available_weight", "walls_available_weight", "pcr_available_weight",
+                    "options_total_available_weight", "full_chain_fresh"):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value

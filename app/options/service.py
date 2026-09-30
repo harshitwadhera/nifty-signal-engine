@@ -13,6 +13,7 @@ from app.options.config import OptionsConfig
 from app.options.discovery import OptionDiscovery, SubscriptionWindow, atm
 from app.options.state import OptionBook, finite_json, nonnegative, normalize_quote
 from app.options.storage import OptionsStore
+from app.signals.engine import SignalEngine
 
 logger = logging.getLogger("market_app")
 INDICES = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK"}
@@ -153,21 +154,27 @@ class OptionsService:
             minute = now.replace(second=0, microsecond=0)
             if minute != self._last_persist:
                 for index in INDICES:
-                    summary, rows = self.response(index, window=5)
+                    summary, rows = self.response(index)
                     coverage = summary.get("coverage") or {}
+                    components = summary["component_availability"]
+                    near = summary["near_atm_quality"]
+                    atm_quality = summary["atm_quality"]
                     logger.info("", extra={
-                        "event": "options_chain_health",
-                        "status": "stale" if summary.get("stale") else "fresh",
-                        "index": index,
-                        "expiry": summary.get("selected_expiry"),
+                        "event": "options_chain_health", "status": "usable" if summary["options_total_available_weight"] else "unavailable",
+                        "index": index, "expiry": summary.get("selected_expiry"),
                         "expected_contracts": coverage.get("expected_contracts"),
-                        "fresh_contracts": coverage.get("received_contracts"),
-                        "missing_contracts": (
-                            coverage.get("expected_contracts") - coverage.get("received_contracts")
-                            if isinstance(coverage.get("expected_contracts"), int)
-                            and isinstance(coverage.get("received_contracts"), int) else None
-                        ),
+                        "fresh_contracts": coverage.get("fresh_contracts"),
+                        "non_fresh_contracts": coverage.get("non_fresh_contracts"),
                         "coverage_percent": coverage.get("percent"),
+                        "near_atm_expected": near["expected_contracts"], "near_atm_fresh": near["fresh_contracts"],
+                        "atm_ce_fresh": atm_quality["ce"]["fresh"], "atm_pe_fresh": atm_quality["pe"]["fresh"],
+                        "atm_ce_liquidity": atm_quality["ce"]["liquidity"], "atm_pe_liquidity": atm_quality["pe"]["liquidity"],
+                        "positioning_available_weight": components["positioning_flow"]["available_weight"],
+                        "atm_available_weight": components["atm_behavior"]["available_weight"],
+                        "walls_available_weight": components["oi_wall_breakout"]["available_weight"],
+                        "pcr_available_weight": components["pcr_confirmation"]["available_weight"],
+                        "options_total_available_weight": summary["options_total_available_weight"],
+                        "full_chain_fresh": summary["full_chain_fresh"],
                     })
                     # response returns all discovered contracts, including REST
                     # quotes outside the live window and fresh streaming overlays.
@@ -228,7 +235,7 @@ class OptionsService:
             "expiry": expiry.isoformat(),
             "expected_contracts": len(contracts),
             "returned_contracts": returned_contracts,
-            "missing_contracts": len(contracts) - returned_contracts,
+            "unreturned_contracts": len(contracts) - returned_contracts,
         })
 
     def _refresh_loop(self):
@@ -354,6 +361,12 @@ class OptionsService:
                     displayed.append(live)
                 else:
                     displayed.append(row)
+            # Compute diagnostics from exactly the same scorer used for qualification,
+            # after the existing fresh ATM stream overlay. No broker I/O here.
+            scored = SignalEngine().options(summary)
+            summary.update(component_availability=scored.component_availability,
+                           atm_quality=scored.component_availability["atm_behavior"]["sides"],
+                           options_total_available_weight=scored.available_weight)
             summary.update(status=self.status, front_month_futures=front_future,
                            futures_basis="selected_expiry_match_only", snapshot_started_at=snapshot.get("started_at"),
                            expiries=[d.isoformat() for d in self.discovery.get_expiries(index)],

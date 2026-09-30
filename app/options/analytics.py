@@ -3,6 +3,7 @@ from datetime import datetime, time
 from app.analytics.session import IST
 from app.options.discovery import atm
 from app.options.pricing import implied_greeks
+from app.options.quality import fresh_price, field_available, positioning_usable, paired_rows
 
 
 def positioning(row, config):
@@ -36,7 +37,8 @@ def pcr(rows, field):
     return put/call if call > 0 else None
 
 
-def walls(rows):
+def walls(rows, flow_rows=None):
+    flow_rows = rows if flow_rows is None else flow_rows
     result = {}
     for kind, name in (("CE", "call"), ("PE", "put")):
         side = [r for r in rows if r["option_type"] == kind]
@@ -44,9 +46,11 @@ def walls(rows):
             eligible = [r for r in side if r.get(field) is not None and predicate(r[field])]
             return [{"strike": r["strike"], "value": r[field]} for r in sorted(eligible, key=lambda r: r[field], reverse=reverse)[:3]]
         top = rank("oi", lambda value: value > 0)
+        side = [r for r in flow_rows if r["option_type"] == kind]
         additions = rank("oi_change_session", lambda value: value > 0)
-        unwinding = rank("oi_change_session", lambda value: value < 0, False)
         writing = [r for r in side if r.get("positioning") == "SHORT_BUILDUP"]
+        side = [r for r in side if r.get("positioning") in ("SHORT_COVERING", "LONG_UNWINDING")]
+        unwinding = rank("oi_change_session", lambda value: value < 0, False)
         result.update({name+"_oi_wall": top[0]["strike"] if top else None,
                        "top_3_"+name+"_oi": top, name+"_oi_additions": additions,
                        name+"_unwinding_zones": unwinding,
@@ -96,37 +100,49 @@ def enrich(row, spot, future, now, config, fresh=True):
 class OptionsAnalytics:
     @staticmethod
     def summarize(index, expiry, rows, spot, future, expected, now, refresh, last_tick, config, window=10):
-        valid = [r for r in rows if r["ltp"] is not None and not r["stale"]]
+        valid = [r for r in rows if fresh_price(r)]
         complete = len(valid) == expected and expected > 0
-        oi_complete = complete and {r["option_type"] for r in rows} == {"CE", "PE"} and all(r["oi"] is not None for r in rows)
-        volume_complete = complete and all(r["volume"] is not None for r in rows)
+        oi_rows = [r for r in rows if field_available(r, "oi")]
+        flow_rows = [r for r in rows if positioning_usable(r)]
+        oi_complete = complete and len(oi_rows) == expected
         center = atm(sorted({r["strike"] for r in rows}), spot)
         strikes = sorted({r["strike"] for r in rows})
         position = strikes.index(center) if center is not None else 0
         near_strikes = set(strikes[max(0, position-window):position+window+1]) if center is not None else set()
         near = [r for r in rows if r["strike"] in near_strikes]
-        near_fresh = bool(near) and all(not r["stale"] and r["ltp"] is not None for r in near)
-        levels = walls(rows if oi_complete else [])
-        change_complete = oi_complete and all(r.get("oi_change_session") is not None for r in rows)
-        if not change_complete:
-            for name in ("call", "put"):
-                for key in ("oi_additions", "unwinding_zones", "writing_zones"):
-                    levels[name+"_"+key] = []
-                levels["highest_"+name+"_oi_addition"] = levels["largest_"+name+"_unwinding"] = None
+        near_valid = [r for r in near if fresh_price(r)]
+        levels = walls(oi_rows, flow_rows)
         pain = max_pain(rows) if oi_complete else None
+        ratios, ratio_quality = {}, {}
+        for key, population, field in (("pcr_oi", rows, "oi"), ("pcr_volume", rows, "volume"),
+                                       ("near_atm_pcr_oi", near, "oi"), ("near_atm_pcr_volume", near, "volume")):
+            usable = paired_rows(population, field)
+            ratios[key] = pcr(usable, field)
+            ratio_quality[key] = {"usable_contracts": len(usable), "paired_strikes": len(usable)//2,
+                                  "available": ratios[key] is not None,
+                                  "reason": "Matched fresh CE/PE strikes" if ratios[key] is not None
+                                  else "Matched fresh CE/PE data and positive call denominator required"}
+        def coverage(population, fresh):
+            return {"expected_contracts": population, "fresh_contracts": fresh,
+                    "percent": round(100*fresh/population, 1) if population else 0}
         return {"index": index, "selected_expiry": expiry.isoformat() if expiry else None, "spot": spot, "futures": future,
-                "atm": center, "pcr_oi": pcr(rows, "oi") if oi_complete else None,
-                "pcr_volume": pcr(rows, "volume") if volume_complete else None, "pcr_scope": "full_selected_expiry",
-                "near_atm_pcr_oi": pcr(near, "oi") if near_fresh else None,
-                "near_atm_pcr_volume": pcr(near, "volume") if near_fresh else None,
-                "near_atm_window": window, "max_pain": pain, "distance_from_spot": pain-spot if pain is not None and spot is not None else None,
+                "atm": center, **ratios, "pcr_scope": "matched_fresh_strikes_selected_expiry", "pcr_quality": ratio_quality,
+                "near_atm_window": window, "near_atm_quality": coverage(len(near), len(near_valid)),
+                "max_pain": pain, "distance_from_spot": pain-spot if pain is not None and spot is not None else None,
                 **levels, "oi_change_basis": "session_first_observation",
+                "positioning_quality": {side: sum(r["option_type"] == kind for r in flow_rows)
+                                        for side, kind in (("call", "CE"), ("put", "PE"))},
+                "oi_quality": {side: sum(r["option_type"] == kind and r["oi"] > 0 for r in oi_rows)
+                               for side, kind in (("call", "CE"), ("put", "PE"))},
                 "atm_ce": next((r for r in rows if r["strike"] == center and r["option_type"] == "CE"), None),
                 "atm_pe": next((r for r in rows if r["strike"] == center and r["option_type"] == "PE"), None),
                 "timestamp": now.isoformat(), "last_full_chain_refresh_at": refresh,
-                "last_stream_tick_at": last_tick, "stale": not complete,
-                "coverage": {"expected_contracts": expected, "received_contracts": len(valid),
-                             "percent": round(100*len(valid)/expected, 1) if expected else 0,
-                             "oi_contracts": sum(r["oi"] is not None and not r["stale"] for r in rows),
-                             "oi_change_contracts": sum(r.get("oi_change_session") is not None and not r["stale"] for r in rows),
-                             "volume_contracts": sum(r["volume"] is not None and not r["stale"] for r in rows)}}
+                # evidence_fresh describes the derived observations, never total coverage.
+                # Legacy stale remains a full-chain diagnostic for existing API consumers.
+                "evidence_fresh": True, "last_stream_tick_at": last_tick,
+                "full_chain_fresh": complete, "stale": not complete,
+                "coverage": {**coverage(expected, len(valid)), "received_contracts": len(valid),
+                             "non_fresh_contracts": max(0, expected-len(valid)),
+                             "oi_contracts": len(oi_rows),
+                             "oi_change_contracts": sum(field_available(r, "oi_change_session") for r in rows),
+                             "volume_contracts": sum(field_available(r, "volume") for r in rows)}}

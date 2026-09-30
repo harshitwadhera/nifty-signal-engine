@@ -142,3 +142,8 @@ Open your HTTPS dashboard and authenticate with Zerodha manually each trading da
 - Back up before updates and on a regular schedule. Stop the service with `docker compose stop`, back up the entire `data` directory to protected storage, then run `docker compose start`. For online backups, use SQLite's backup API; do not copy only the database while writes are active. Test restoring backups.
 
 Use `docker compose down` for a graceful shutdown; it leaves the host data directory intact. The container's writable data mount must remain owned by UID/GID `10001` after restoration. Compose's shutdown allowance is documented in [the service reference](https://docs.docker.com/reference/compose-file/services/#stop_grace_period).
+
+Options scoring uses independent component availability. Overall chain coverage is
+informational; expand **OPTIONS DATA QUALITY** for ATM, positioning, wall, and PCR
+availability. See [Options component availability](docs/options-component-availability.md)
+for compatibility details and the unchanged qualification thresholds.
