@@ -16,7 +16,7 @@ from .selection import select_option
 from .explanation import explain, safe
 from .outcomes import entered, observe, transitioned
 
-ACTIVE = {'CANDIDATE', 'CONFIRMED', 'TARGET1_HIT'}
+ACTIVE = {'CANDIDATE', 'EARLY_SETUP', 'CONFIRMED', 'TARGET1_HIT'}
 
 
 class SignalJournal:
@@ -241,6 +241,111 @@ class SignalLifecycle:
                                   history=(LifecycleEvent('CANDIDATE', now.isoformat(), 'Direction, structure and liquidity qualify'),))
             return Submission(plan.direction, self._save(record), True, ())
 
+    def observe_tick(self, symbol, price, at):
+        """Persist the first live trigger breach; a tick alone never confirms."""
+        try:
+            now, price = instant(at), positive(price)
+        except (TypeError, ValueError):
+            return None
+        if price is None:
+            return None
+        with self._operation():
+            record = next((r for r in self.records.values()
+                if r.state in ('CANDIDATE', 'EARLY_SETUP') and r.plan.entry_trigger.instrument == symbol), None)
+            if record is None or now < instant(record.created_at):
+                return record
+            watch = dict(record.trigger_watch or {})
+            previous_tick = watch.get('last_tick_at')
+            if previous_tick:
+                try:
+                    if now <= instant(previous_tick):
+                        return record
+                except ValueError:
+                    pass
+            watch['last_tick_at'] = now.isoformat()
+            level = record.plan.entry_trigger.level
+            sign = 1 if record.plan.direction == 'CALL' else -1
+            if sign*(price-level) <= 0:
+                return self._save(replace(record, trigger_watch=watch))
+            if watch.get('breached_at'):
+                return self._save(replace(record, trigger_watch=watch))
+            watch.update({
+                'signal_id': record.signal_id,
+                'direction': record.plan.direction,
+                'trigger_price': level,
+                'breached_at': now.isoformat(),
+                'breach_price': price,
+                'underlying_symbol': symbol,
+                'selected_option': record.plan.option.trading_symbol,
+                'lifecycle_state': record.state,
+                'structure_1m': None,
+            })
+            return self._save(replace(record, trigger_watch=watch))
+
+    def _early_structure(self, record, bars, now):
+        """Use only completed 1m bars after a live breach; no percentage threshold."""
+        watch = record.trigger_watch or {}
+        if not watch.get('breached_at'):
+            return None
+        try:
+            breached = instant(watch['breached_at'])
+        except (TypeError, ValueError):
+            return None
+        valid = []
+        for bar in bars or ():
+            if not isinstance(bar, dict) or bar.get('completed') is not True or bar.get('partial') is not False:
+                continue
+            if bar.get('symbol') != record.plan.entry_trigger.instrument or bar.get('interval') != '1m':
+                continue
+            try:
+                start, end = instant(bar['start_time']), instant(bar['end_time'])
+                if end-start != timedelta(minutes=1) or end <= breached or end > now:
+                    continue
+                if not 0 <= (now-end).total_seconds() <= self.config.observation_max_age_seconds+60:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            opened, high, low, close = [positive(bar.get(k)) for k in ('open', 'high', 'low', 'close')]
+            if any(v is None for v in (opened, high, low, close)) or not low <= min(opened, close) <= max(opened, close) <= high:
+                continue
+            valid.append((end, opened, high, low, close))
+        valid.sort(key=lambda row: row[0])
+        if not valid:
+            return None
+        level = record.plan.entry_trigger.level
+        sign = 1 if record.plan.direction == 'CALL' else -1
+        latest = valid[-1]
+        if sign*(latest[4]-level) <= 0:
+            return {'failed': True, 'reason': 'Completed 1m candle recovered through the trigger'}
+        if len(valid) < 2:
+            return {'qualified': False, 'failed': False, 'reason': 'Waiting for a second completed 1m structure candle'}
+        previous = valid[-2]
+        if sign*(previous[4]-level) <= 0:
+            return {'qualified': False, 'failed': False, 'reason': 'First completed 1m candle did not hold beyond the trigger'}
+        directional_body = sign*(latest[4]-latest[1]) > 0
+        resumed = sign*(latest[4]-previous[4]) > 0
+        if sign == 1:
+            retest_rejection = latest[3] <= level <= latest[2] and latest[4] > level
+            continuation = latest[3] >= previous[3] and latest[2] > previous[2]
+            direction = 'BULLISH'
+        else:
+            retest_rejection = latest[3] <= level <= latest[2] and latest[4] < level
+            continuation = latest[2] <= previous[2] and latest[3] < previous[3]
+            direction = 'BEARISH'
+        qualified = directional_body and resumed and (retest_rejection or continuation)
+        return {
+            'qualified': qualified,
+            'failed': False,
+            'direction': direction if qualified else 'DEVELOPING',
+            'retest_rejection': retest_rejection,
+            'continuation_structure': continuation,
+            'latest_close': latest[4],
+            'latest_end': latest[0].isoformat(),
+            'reason': ('Completed 1m retest/rejection and continuation' if retest_rejection and qualified
+                       else 'Two completed 1m candles show directional continuation' if qualified
+                       else '1m follow-through is not yet strong enough'),
+        }
+
     def _bar(self, record, bar, now):
         if not isinstance(bar, dict) or bar.get('completed') is not True or bar.get('partial') is not False:
             return None
@@ -263,7 +368,7 @@ class SignalLifecycle:
             return None
         return opened, high, low, close
 
-    def advance(self, signal_id, snapshot, contracts=(), bar=None):
+    def advance(self, signal_id, snapshot, contracts=(), bar=None, minute_bars=()):
         now = instant(snapshot.as_of)
         with self._operation():
             self.context = explain(snapshot, contracts, self.planner, bar)
@@ -297,18 +402,33 @@ class SignalLifecycle:
             adverse = min(low, price) if sign == 1 else max(high, price)
             favorable = max(high, price) if sign == 1 else min(low, price)
             stop_touched = sign*(adverse-plan.invalidation.level) <= 0
-            if record.state != 'CANDIDATE':
+            if record.state in ('CONFIRMED', 'TARGET1_HIT'):
                 record = self._save(replace(record, outcome=observe(record, price, favorable, adverse, now, stop_touched)))
             # A bar can touch both stop and target without revealing ordering.
             # Conservatively invalidate/stop first; never infer a profitable fill.
             if sign*(adverse-plan.invalidation.level) <= 0:
-                state = 'INVALIDATED' if record.state == 'CANDIDATE' else 'STOPPED'
+                state = 'INVALIDATED' if record.state in ('CANDIDATE', 'EARLY_SETUP') else 'STOPPED'
                 return self._transition(record, state, now, 'Underlying structural invalidation touched (stop-first for ambiguous bars)')
-            if record.state == 'CANDIDATE':
+            if record.state in ('CANDIDATE', 'EARLY_SETUP'):
+                level = plan.entry_trigger.level
+                early = self._early_structure(record, minute_bars, now)
+                if early and early.get('failed'):
+                    if record.state == 'EARLY_SETUP':
+                        return self._transition(record, 'CANDIDATE', now,
+                            'Early setup failed before 5m confirmation; waiting for a new live breach', trigger_watch={})
+                    record = self._save(replace(record, trigger_watch={}))
+                elif early:
+                    watch = dict(record.trigger_watch or {})
+                    watch['structure_1m'] = early
+                    record = self._save(replace(record, trigger_watch=watch))
+                    if (record.state == 'CANDIDATE' and early.get('qualified')
+                            and self.planner.engine.decide(snapshot).decision == plan.direction):
+                        record = self._transition(record, 'EARLY_SETUP', now,
+                            'Live trigger breach plus completed 1m continuation/retest; 5m confirmation pending',
+                            trigger_watch=watch)
                 if not values:
                     return record
                 opened, high, low, close = values
-                level = plan.entry_trigger.level
                 crossed = sign*(opened-level) <= 0 and sign*(close-level) > 0
                 if plan.entry_trigger.type == 'breakout_retest':
                     crossed = sign*(opened-level) > 0 and low <= level <= high and sign*(close-level) > 0
