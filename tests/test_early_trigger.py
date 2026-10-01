@@ -51,10 +51,10 @@ def test_completed_1m_continuation_creates_early_setup_but_not_confirmed_history
     manager = SignalLifecycle(SignalPlanner(engine))
     try:
         record = manager.submit(sample, rows).record
-        breach_at = instant(sample.as_of) + timedelta(seconds=1)
+        breach_at = instant(sample.as_of) + timedelta(minutes=1)
         manager.observe_tick('NIFTY 50', 101 if call else 99, breach_at, breach_at)
-        newer, quotes = move(sample, rows, 121, 101.5 if call else 98.5)
-        start = instant(sample.as_of)
+        newer, quotes = move(sample, rows, 181, 101.5 if call else 98.5)
+        start = breach_at
         if call:
             bars = [
                 minute_bar(start, open=99.9, high=100.8, low=99.8, close=100.5),
@@ -81,10 +81,10 @@ def test_single_wick_or_one_minute_bar_is_not_early_setup(call):
     manager = SignalLifecycle(SignalPlanner(engine))
     try:
         record = manager.submit(sample, rows).record
-        at = instant(sample.as_of) + timedelta(seconds=1)
+        at = instant(sample.as_of) + timedelta(minutes=1)
         manager.observe_tick('NIFTY 50', 101 if call else 99, at, at)
-        newer, quotes = move(sample, rows, 61, 99.9 if call else 100.1)
-        start = instant(sample.as_of)
+        newer, quotes = move(sample, rows, 181, 99.9 if call else 100.1)
+        start = at
         bar = (minute_bar(start, open=99.9, high=101, low=99.7, close=99.9) if call else
                minute_bar(start, open=100.1, high=100.3, low=99, close=100.1))
         result = manager.advance(record.signal_id, newer, quotes, minute_bars=[bar])
@@ -101,10 +101,10 @@ def test_early_setup_failure_returns_to_wait_for_trigger(call):
     manager = SignalLifecycle(SignalPlanner(engine))
     try:
         record = manager.submit(sample, rows).record
-        at = instant(sample.as_of) + timedelta(seconds=1)
+        at = instant(sample.as_of) + timedelta(minutes=1)
         manager.observe_tick('NIFTY 50', 101 if call else 99, at, at)
-        first, quotes = move(sample, rows, 121, 101.5 if call else 98.5)
-        start = instant(sample.as_of)
+        first, quotes = move(sample, rows, 181, 101.5 if call else 98.5)
+        start = at
         if call:
             good = [
                 minute_bar(start, close=100.5),
@@ -135,10 +135,10 @@ def test_existing_5m_confirmation_remains_only_confirmed_transition(call):
     manager = SignalLifecycle(SignalPlanner(engine))
     try:
         record = manager.submit(sample, rows).record
-        at = instant(sample.as_of) + timedelta(seconds=1)
+        at = instant(sample.as_of) + timedelta(minutes=1)
         manager.observe_tick('NIFTY 50', 101 if call else 99, at, at)
-        early_snapshot, quotes = move(sample, rows, 121, 101.5 if call else 98.5)
-        start = instant(sample.as_of)
+        early_snapshot, quotes = move(sample, rows, 181, 101.5 if call else 98.5)
+        start = at
         bars = ([
             minute_bar(start, close=100.5),
             minute_bar(start + timedelta(minutes=1), open=100.4, high=101.6, low=100.3, close=101.5),
@@ -200,3 +200,49 @@ def test_early_setup_restart_persists_watch_state(tmp_path):
         assert saved.trigger_watch['selected_option'] == record.plan.option.trading_symbol
     finally:
         restored.close()
+
+
+@pytest.mark.parametrize('call', [True, False])
+def test_early_setup_is_demoted_when_current_direction_is_lost(call):
+    sample, rows, engine = example(call)
+    manager = SignalLifecycle(SignalPlanner(engine))
+    try:
+        record = manager.submit(sample, rows).record
+        breach_at = instant(sample.as_of) + timedelta(minutes=1)
+        manager.observe_tick('NIFTY 50', 101 if call else 99, breach_at, breach_at)
+        early_snapshot, quotes = move(sample, rows, 181, 101.5 if call else 98.5)
+        start = breach_at
+        bars = ([
+            minute_bar(start, close=100.5),
+            minute_bar(start + timedelta(minutes=1), open=100.4, high=101.6, low=100.3, close=101.5),
+        ] if call else [
+            minute_bar(start, open=100.1, high=100.2, low=99.2, close=99.5),
+            minute_bar(start + timedelta(minutes=1), open=99.6, high=99.7, low=98.4, close=98.5),
+        ])
+        early = manager.advance(record.signal_id, early_snapshot, quotes, minute_bars=bars)
+        assert early.state == 'EARLY_SETUP'
+        engine.decide.return_value.decision = 'PUT' if call else 'CALL'
+        later, quotes = move(early_snapshot, rows, 60, 101.6 if call else 98.4)
+        result = manager.advance(record.signal_id, later, quotes, minute_bars=bars)
+        assert result.state == 'CANDIDATE'
+        assert result.trigger_watch == {}
+    finally:
+        manager.close()
+
+
+def test_breach_inside_existing_minute_candle_does_not_count_that_candle():
+    sample, rows, engine = example(True)
+    manager = SignalLifecycle(SignalPlanner(engine))
+    try:
+        record = manager.submit(sample, rows).record
+        breach_at = instant(sample.as_of) + timedelta(seconds=30)
+        manager.observe_tick('NIFTY 50', 101, breach_at, breach_at)
+        later, quotes = move(sample, rows, 121, 101.5)
+        bars = [
+            minute_bar(instant(sample.as_of), close=100.5),
+            minute_bar(instant(sample.as_of) + timedelta(minutes=1), open=100.4, high=101.6, low=100.3, close=101.5),
+        ]
+        result = manager.advance(record.signal_id, later, quotes, minute_bars=bars)
+        assert result.state == 'CANDIDATE'
+    finally:
+        manager.close()
