@@ -314,3 +314,44 @@ def test_opportunity_api_combines_confirmed_signal_with_taken_flag(service):
     assert data['items'][0]['confirmed_at'] == '2026-09-25T10:05:00+05:30'
     assert data['items'][0]['manual_trade']['trade_id'] == 'trade-1'
     service.journal.close()
+
+
+def test_early_setup_requires_live_price_to_remain_beyond_trigger(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+    }]
+    service.stream.live.return_value = {'websocket_status':'connected', 'instruments':[observation(24899)]}
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'NO_TRADE'
+    assert setup['can_confirm'] is False
+    assert 'fallen back through the live trigger' in setup['reason']
+    with pytest.raises(ValueError):
+        entered(service)
+
+
+def test_early_setup_rejects_current_risk_reward_below_minimum(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+    }]
+    service.stream.live.return_value = {'websocket_status':'connected', 'instruments':[observation(24999)]}
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'NO_TRADE'
+    assert setup['can_confirm'] is False
+    assert 'risk/reward' in setup['reason']
+
+
+def test_early_setup_rejects_no_longer_eligible_option(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+    }]
+    service.options.response.return_value[1][0]['stale'] = True
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'NO_TRADE'
+    assert setup['can_confirm'] is False
+    assert 'option' in setup['reason'].lower()
