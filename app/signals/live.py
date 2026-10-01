@@ -4,6 +4,7 @@ from app.signals.engine import positive
 from dataclasses import replace, asdict
 from copy import deepcopy
 from threading import Event, Thread, RLock
+from queue import Empty, Queue
 import logging
 from .execution_models import ExecutionConfig, instant
 from .planning import SignalPlanner
@@ -23,14 +24,30 @@ class LiveSignals:
         self.lifecycle = SignalLifecycle(SignalPlanner(self.engine, execution_config or ExecutionConfig.load()), SignalJournal(journal_path))
         self.stop = Event()
         self.thread = None
+        self.tick_thread = None
+        self.tick_queue = None
         self.view_lock = RLock()
         self.views = {}
 
     def start(self):
         if self.thread or self.stop.is_set():
             return
+        self.tick_queue = self.stream.state.subscribe(maxsize=10000)
+        if isinstance(self.tick_queue, Queue):
+            self.tick_thread = Thread(target=self._watch_ticks, daemon=True, name='signal-trigger-watch')
+            self.tick_thread.start()
         self.thread = Thread(target=self._run, daemon=True, name='signal-observer')
         self.thread.start()
+
+    def _watch_ticks(self):
+        while not self.stop.is_set():
+            try:
+                tick = self.tick_queue.get(timeout=.5)
+                self.lifecycle.observe_tick(tick.symbol, tick.last_price, tick.timestamp, tick.received_at)
+            except Empty:
+                pass
+            except Exception:
+                logger.warning('', extra={'event': 'signal_trigger_watch_unavailable'})
 
     def _run(self):
         while not self.stop.is_set():
@@ -149,7 +166,8 @@ class LiveSignals:
         if active:
             reference = active.plan.entry_trigger.instrument
             rows = completed_bars(bars if reference == symbol else future_bars, now, reference)
-            record = self.lifecycle.advance(active.signal_id, snapshot, contracts, rows[-1] if rows else None)
+            minute_bars = self.structure.aggregator.candles(reference, '1m', 10)
+            record = self.lifecycle.advance(active.signal_id, snapshot, contracts, rows[-1] if rows else None, minute_bars)
             return self._publish(index, snapshot, Submission('NO_TRADE', record, False, ('Existing signal lifecycle observed; no new signal',)))
         return self._publish(index, snapshot, self.lifecycle.submit(snapshot, contracts))
 
@@ -159,4 +177,10 @@ class LiveSignals:
             self.thread.join(timeout=30)
             if self.thread.is_alive():
                 raise RuntimeError('Signal observer shutdown timed out')
+        if self.tick_thread:
+            self.tick_thread.join(timeout=10)
+            if self.tick_thread.is_alive():
+                raise RuntimeError('Signal trigger watcher shutdown timed out')
+        if isinstance(self.tick_queue, Queue):
+            self.stream.state.unsubscribe(self.tick_queue)
         self.lifecycle.close()
