@@ -241,13 +241,14 @@ class SignalLifecycle:
                                   history=(LifecycleEvent('CANDIDATE', now.isoformat(), 'Direction, structure and liquidity qualify'),))
             return Submission(plan.direction, self._save(record), True, ())
 
-    def observe_tick(self, symbol, price, at):
-        """Persist the first live trigger breach; a tick alone never confirms."""
+    def observe_tick(self, symbol, price, at, received_at=None):
+        """Persist only a fresh live trigger breach; a tick alone never confirms."""
         try:
             now, price = instant(at), positive(price)
+            received = instant(received_at) if received_at is not None else now
         except (TypeError, ValueError):
             return None
-        if price is None:
+        if price is None or now > received or (received-now).total_seconds() > self.config.observation_max_age_seconds:
             return None
         with self._operation():
             record = next((r for r in self.records.values()
@@ -255,20 +256,12 @@ class SignalLifecycle:
             if record is None or now < instant(record.created_at):
                 return record
             watch = dict(record.trigger_watch or {})
-            previous_tick = watch.get('last_tick_at')
-            if previous_tick:
-                try:
-                    if now <= instant(previous_tick):
-                        return record
-                except ValueError:
-                    pass
-            watch['last_tick_at'] = now.isoformat()
+            if watch.get('breached_at'):
+                return record
             level = record.plan.entry_trigger.level
             sign = 1 if record.plan.direction == 'CALL' else -1
             if sign*(price-level) <= 0:
-                return self._save(replace(record, trigger_watch=watch))
-            if watch.get('breached_at'):
-                return self._save(replace(record, trigger_watch=watch))
+                return record
             watch.update({
                 'signal_id': record.signal_id,
                 'direction': record.plan.direction,
@@ -380,7 +373,7 @@ class SignalLifecycle:
             created = instant(record.created_at)
             if now.date() != created.date() or now.time() >= self.config.session_end:
                 return self._transition(record, 'EXPIRED', now, 'Session ended')
-            if record.state == 'CANDIDATE' and now >= instant(record.expires_at):
+            if record.state in ('CANDIDATE', 'EARLY_SETUP') and now >= instant(record.expires_at):
                 return self._transition(record, 'EXPIRED', now, 'Candidate lifetime or new-entry cutoff reached')
             # Persist the observation watermark even when there is no transition.
             # Replay of an older snapshot cannot later change the signal.
@@ -390,7 +383,7 @@ class SignalLifecycle:
             plan = record.plan
             is_spot = plan.entry_trigger.instrument in ('NIFTY 50', 'NIFTY BANK')
             if not is_spot and snapshot.structure.get('future_symbol') != plan.entry_trigger.instrument:
-                return self._transition(record, 'INVALIDATED' if record.state == 'CANDIDATE' else 'EXPIRED', now, 'Underlying contract changed')
+                return self._transition(record, 'INVALIDATED' if record.state in ('CANDIDATE', 'EARLY_SETUP') else 'EXPIRED', now, 'Underlying contract changed')
             price = positive(snapshot.structure.get('spot' if is_spot else 'future'))
             if price is None:
                 return record
