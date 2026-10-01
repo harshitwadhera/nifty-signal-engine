@@ -118,18 +118,25 @@
     const box = card.body;
     box.replaceChildren(); card.heading.replaceChildren();
     const badge = document.createElement('p');
-    badge.className = data.decision === 'NO_TRADE' ? 'signal-neutral' : 'signal-direction';
-    badge.textContent = (data.decision || 'NO_TRADE').replaceAll('_', ' ');
+    const early = data.state === 'EARLY_SETUP';
+    badge.className = early ? 'signal-early' : data.decision === 'NO_TRADE' ? 'signal-neutral' : 'signal-direction';
+    badge.textContent = early ? `EARLY ${data.decision} SETUP` : (data.decision || 'NO_TRADE').replaceAll('_', ' ');
     card.heading.append(badge);
     qualification(card.heading, data); card.control.update(data);
     const record = data.record, plan = record?.plan, outcome = record?.outcome;
     const trigger = plan?.entry_trigger, option = plan?.option;
+    const watch = record?.trigger_watch || {}, earlyStructure = watch.structure_1m || {};
     const rows = [
       ['State', data.state || 'No active signal'], ['Confidence (score / 100)', data.confidence],
       ['Freshness', data.data_quality?.stale ? 'STALE / waiting for usable data' : 'Current observation'],
       ['Score basis', data.score_basis === 'candidate_creation' ? 'Recorded at candidate creation' : 'Current qualification'],
       ['Bullish score', data.bullish_score], ['Bearish score', data.bearish_score],
       ['Entry trigger', trigger ? `${trigger.type} · ${format(trigger.level)} · ${trigger.confirmation} · ${trigger.instrument}` : null],
+      ['Trigger status', watch.breached_at ? `BREACHED · ${stamp(watch.breached_at)} @ ${format(watch.breach_price)}` : 'WAITING'],
+      ['1m structure', early ? earlyStructure.direction || 'DEVELOPING' : earlyStructure.direction],
+      ['Retest / rejection', early ? (earlyStructure.retest_rejection ? 'CONFIRMED' : earlyStructure.continuation_structure ? 'CONTINUATION STRUCTURE' : 'PENDING') : null],
+      ['5m confirmation', early ? 'PENDING' : record?.state === 'CONFIRMED' ? 'CONFIRMED' : null],
+      ['Risk status', early ? 'EARLY / MANUAL' : null],
       ['Invalidation', plan?.invalidation?.level], ['T1', plan?.target1?.level], ['T2', plan?.target2?.level],
       ['T1 R:R (plan)', plan?.t1_rr], ['T2 R:R (plan)', plan?.t2_rr],
       ['T1 R:R (confirmation)', record?.confirmed_t1_rr],
@@ -148,6 +155,11 @@
       term.textContent = label; detail.textContent = format(value); list.append(term, detail);
     }
     box.append(list);
+    if (early) {
+      const warning = document.createElement('p'); warning.className = 'signal-early-warning';
+      warning.textContent = 'This is an early setup before normal 5-minute confirmation. No automatic trade is placed.';
+      box.append(warning);
+    }
     section(box, 'Category breakdown', Object.entries(data.category_scores || {}).map(([name, score]) =>
       `${name.replaceAll('_', ' ')}: ${score.direction} · bullish ${format(score.bullish_points)} / bearish ${format(score.bearish_points)} · available ${format(score.available_weight)}`));
     section(box, 'Evidence', data.evidence || []);
