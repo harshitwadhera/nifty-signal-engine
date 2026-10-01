@@ -422,6 +422,7 @@ class SignalLifecycle:
                     record = self._save(replace(record, trigger_watch=watch))
                     if (record.state == 'CANDIDATE' and early.get('qualified')
                             and self.planner.engine.decide(snapshot).decision == plan.direction):
+                        watch['lifecycle_state'] = 'EARLY_SETUP'
                         record = self._transition(record, 'EARLY_SETUP', now,
                             'Live trigger breach plus completed 1m continuation/retest; 5m confirmation pending',
                             trigger_watch=watch)
@@ -446,8 +447,11 @@ class SignalLifecycle:
                 rr = risk_reward(plan.direction, entry, plan.invalidation.level, plan.target1.level)
                 if rr is None or rr < self.config.minimum_t1_rr:
                     return self._transition(record, 'INVALIDATED', now, 'Confirmation risk/reward below minimum')
+                confirmed_watch = dict(record.trigger_watch or {})
+                if confirmed_watch:
+                    confirmed_watch['lifecycle_state'] = 'CONFIRMED'
                 return self._transition(record, 'CONFIRMED', now, 'Completed 5m candle and fresh qualification confirmed',
-                                        confirmation_price=entry, confirmed_t1_rr=rr,
+                                        confirmation_price=entry, confirmed_t1_rr=rr, trigger_watch=confirmed_watch,
                                         outcome=entered(entry, next((positive(r.get('ltp')) for r in contracts
                                             if r.get('instrument_token') == selected.instrument_token), None), now),
                                         confirmed_t2_rr=risk_reward(plan.direction, entry, plan.invalidation.level, plan.target2.level) if plan.target2 else None)
