@@ -68,6 +68,24 @@ def test_explicit_confirmation_only_quantity_and_premium(service):
     with pytest.raises(ValueError): entered(service)
 
 
+
+def test_early_setup_requires_explicit_manual_click_before_monitoring(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+        'reason': '1m continuation',
+    }]
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'EARLY_RISK'
+    assert setup['can_confirm'] is True
+    service.poll()
+    assert service.active()['total'] == 0
+    trade = entered(service)
+    assert trade['metadata']['signal_state_at_entry'] == 'EARLY_SETUP'
+    assert service.active()['total'] == 1
+
+
 def test_candidate_quantity_time_and_coordinate_rejected(service):
     for invalid in (body(quantity=64), body(opened_at=NOW+timedelta(seconds=1)), body(underlying_entry=24700)):
         with pytest.raises(ValueError): service.confirm('NIFTYCALL', invalid)
