@@ -30,7 +30,8 @@ A tick breach alone is never sufficient.
 
 After the first fresh live breach, the system requires two valid completed 1-minute candles after the breach:
 
-1. both completed 1-minute closes remain beyond the trigger in the planned direction;
+1. both completed 1-minute candles must begin at or after the live breach, so no pre-breach candle can contribute evidence;
+2. both completed 1-minute closes remain beyond the trigger in the planned direction;
 2. the latest 1-minute candle has a directional body;
 3. the latest close extends beyond the preceding close in the planned direction; and
 4. the latest candle shows either:
@@ -41,6 +42,8 @@ After the first fresh live breach, the system requires two valid completed 1-min
 5. the existing signal engine must still return the original CALL/PUT direction.
 
 No percentage move threshold and no new confidence threshold are used.
+
+EARLY_SETUP is revalidated on every lifecycle observation. If the current signal engine no longer supports the original direction, the state returns to CANDIDATE and the old trigger watch is cleared. Manual EARLY_SETUP confirmation also requires the live underlying to remain beyond the trigger, the current structural risk/reward to remain above the existing minimum, and the originally selected option to remain eligible.
 
 If a completed 1-minute candle closes back through the trigger before normal confirmation, the trigger watch is cleared. An EARLY_SETUP returns to CANDIDATE/WAIT FOR TRIGGER and must receive a new live breach before it can become early again.
 
