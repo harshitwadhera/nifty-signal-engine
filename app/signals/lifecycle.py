@@ -186,6 +186,7 @@ class SignalLifecycle:
         self.records = self.journal.load()
         self.lock = RLock()
         self.context = None
+        self.last_trigger_ticks = {}
 
     @contextmanager
     def _operation(self):
@@ -248,13 +249,18 @@ class SignalLifecycle:
             received = instant(received_at) if received_at is not None else now
         except (TypeError, ValueError):
             return None
-        if price is None or now > received or (received-now).total_seconds() > self.config.observation_max_age_seconds:
+        if (price is None or now > received+timedelta(seconds=5)
+                or (received-now).total_seconds() > self.config.observation_max_age_seconds):
             return None
         with self._operation():
             record = next((r for r in self.records.values()
                 if r.state in ('CANDIDATE', 'EARLY_SETUP') and r.plan.entry_trigger.instrument == symbol), None)
             if record is None or now < instant(record.created_at):
                 return record
+            previous = self.last_trigger_ticks.get(symbol)
+            if previous is not None and now <= previous:
+                return record
+            self.last_trigger_ticks[symbol] = now
             watch = dict(record.trigger_watch or {})
             if watch.get('breached_at'):
                 return record
