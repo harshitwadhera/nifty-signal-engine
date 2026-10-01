@@ -420,6 +420,16 @@ class SignalLifecycle:
                     return self._transition(record, 'CANDIDATE', now,
                         'Current qualification no longer supports early setup; waiting for a new live breach',
                         trigger_watch={})
+                # A live recovery through the trigger invalidates the early timing
+                # even before the next completed 1m candle is available. This keeps
+                # the lifecycle aligned with the live manual-entry gate.
+                trigger_side = sign*(price-level) > 0
+                if record.trigger_watch and not trigger_side:
+                    if record.state == 'EARLY_SETUP':
+                        return self._transition(record, 'CANDIDATE', now,
+                            'Live price recovered through the trigger before 5m confirmation; waiting for a new breach',
+                            trigger_watch={})
+                    record = self._save(replace(record, trigger_watch={}))
                 early = self._early_structure(record, minute_bars, now)
                 if early and early.get('failed'):
                     if record.state == 'EARLY_SETUP':
