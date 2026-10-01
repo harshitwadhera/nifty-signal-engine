@@ -298,7 +298,9 @@ class SignalLifecycle:
                 continue
             try:
                 start, end = instant(bar['start_time']), instant(bar['end_time'])
-                if end-start != timedelta(minutes=1) or end <= breached or end > now:
+                # A structure candle must begin at/after the breach. A candle
+                # that mostly formed before the crossing cannot become post-breach evidence.
+                if end-start != timedelta(minutes=1) or start < breached or end > now:
                     continue
                 if not 0 <= (now-end).total_seconds() <= self.config.observation_max_age_seconds+60:
                     continue
@@ -410,6 +412,14 @@ class SignalLifecycle:
                 return self._transition(record, state, now, 'Underlying structural invalidation touched (stop-first for ambiguous bars)')
             if record.state in ('CANDIDATE', 'EARLY_SETUP'):
                 level = plan.entry_trigger.level
+                current_decision = self.planner.engine.decide(snapshot).decision
+                # EARLY_SETUP is actionable only while the current observation still
+                # supports the original direction. Losing qualification requires a
+                # completely new live breach rather than silently keeping an old early card.
+                if record.state == 'EARLY_SETUP' and current_decision != plan.direction:
+                    return self._transition(record, 'CANDIDATE', now,
+                        'Current qualification no longer supports early setup; waiting for a new live breach',
+                        trigger_watch={})
                 early = self._early_structure(record, minute_bars, now)
                 if early and early.get('failed'):
                     if record.state == 'EARLY_SETUP':
@@ -421,7 +431,18 @@ class SignalLifecycle:
                     watch['structure_1m'] = early
                     record = self._save(replace(record, trigger_watch=watch))
                     if (record.state == 'CANDIDATE' and early.get('qualified')
-                            and self.planner.engine.decide(snapshot).decision == plan.direction):
+                            and current_decision == plan.direction):
+                        # Early entry keeps the same contract-eligibility and structural
+                        # R:R protections used by normal confirmation. "Early" changes
+                        # timing evidence only; it does not relax trade-quality guards.
+                        selected = select_option(snapshot, plan.direction, contracts, self.config)
+                        if selected is None or selected.instrument_token != plan.option.instrument_token:
+                            return self._transition(record, 'INVALIDATED', now,
+                                'Selected contract no longer eligible during early setup')
+                        early_rr = risk_reward(plan.direction, price, plan.invalidation.level, plan.target1.level)
+                        if early_rr is None or early_rr < self.config.minimum_t1_rr:
+                            return self._transition(record, 'INVALIDATED', now,
+                                'Early setup risk/reward below minimum')
                         watch['lifecycle_state'] = 'EARLY_SETUP'
                         record = self._transition(record, 'EARLY_SETUP', now,
                             'Live trigger breach plus completed 1m continuation/retest; 5m confirmation pending',
@@ -434,7 +455,7 @@ class SignalLifecycle:
                     crossed = sign*(opened-level) > 0 and low <= level <= high and sign*(close-level) > 0
                 if not crossed:
                     return record
-                if self.planner.engine.decide(snapshot).decision != plan.direction:
+                if current_decision != plan.direction:
                     return record
                 # Re-select relative to current spot; an old ATM that drifted far
                 # OTM is never silently retained at confirmation.
