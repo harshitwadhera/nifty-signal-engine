@@ -5,11 +5,10 @@ from threading import Event, RLock, Thread
 from uuid import uuid4
 import logging
 
-from app.signals.execution_models import instant
+from app.signals.execution_models import ExecutionConfig, instant
 from .monitor import SYMBOLS, fresh, observe, price
 from .storage import TradeJournal
 from app.signals.selection import select_option
-from app.signals.execution_models import ExecutionConfig
 
 logger = logging.getLogger('market_app')
 
