@@ -9,6 +9,7 @@ from app.signals.execution_models import instant
 from .monitor import SYMBOLS, fresh, observe, price
 from .storage import TradeJournal
 from app.signals.selection import select_option
+from app.signals.execution_models import ExecutionConfig
 
 logger = logging.getLogger('market_app')
 
@@ -87,7 +88,11 @@ class TradeService:
                 elif state == 'EARLY_RISK':
                     risk = sign*(current-stop)
                     reward = sign*(target-current)
-                    if risk <= 0 or reward <= 0 or reward/risk < self.signals.lifecycle.planner.config.minimum_t1_rr:
+                    config = getattr(getattr(getattr(self.signals, 'lifecycle', None), 'planner', None), 'config', None)
+                    minimum_rr = getattr(config, 'minimum_t1_rr', None)
+                    if not isinstance(minimum_rr, (int, float)):
+                        minimum_rr = ExecutionConfig().minimum_t1_rr
+                    if risk <= 0 or reward <= 0 or reward/risk < minimum_rr:
                         reason = 'Current early-entry risk/reward is below the minimum.'
                         state = 'NO_TRADE'
                     else:
