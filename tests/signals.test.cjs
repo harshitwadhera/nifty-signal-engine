@@ -44,6 +44,20 @@ test('directional panel shows plan, categories, evidence and outcomes',async()=>
   const content=text(elements['nifty-signal']);
   for (const value of ['CALL','CONFIRMED','5m_close_above','NIFTY23000CE','Liquidity at selection','Category breakdown','price trend','Opening range breakout','Minor PCR opposition','MFE / MAE','option coverage percent']) assert.ok(content.includes(value), value);
 });
+test('EARLY_SETUP is visually distinct and explains pending 5m confirmation',async()=>{
+  const {elements}=await render({decision:'PUT',state:'EARLY_SETUP',confidence:72,data_quality:{stale:false},
+    record:{trigger_watch:{breached_at:'2026-09-25T10:01:01+05:30',breach_price:22995,
+      structure_1m:{direction:'BEARISH',retest_rejection:true,continuation_structure:true}},
+      plan:{entry_trigger:{type:'breakdown',level:23000,confirmation:'5m_close_below',instrument:'NIFTY 50'},
+        invalidation:{level:23050},target1:{level:22900},target2:{level:22800},t1_rr:2,t2_rr:4,
+        option:{trading_symbol:'NIFTY23000PE',strike:23000,option_type:'PE',expiry:'2026-09-28',spread_percent:.5,oi:2000,volume:1000}}}});
+  const panel=elements['nifty-signal'], content=text(panel);
+  assert.equal(panel.children[0].children[0].textContent,'EARLY PUT SETUP');
+  assert.equal(panel.children[0].children[0].className,'signal-early');
+  for(const value of ['BREACHED','BEARISH','CONFIRMED','PENDING','EARLY / MANUAL',
+    'early setup before normal 5-minute confirmation','No automatic trade is placed']) assert.ok(content.includes(value),value);
+});
+
 test('failed request clears actionable signal display',async()=>{
   const {elements}=await render({},false);
   assert.equal(elements['nifty-signal'].children[0].children[0].textContent,'NO TRADE');

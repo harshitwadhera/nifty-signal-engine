@@ -7,7 +7,7 @@ import os
 
 from app.analytics.session import IST
 
-SignalState = Literal['CANDIDATE', 'CONFIRMED', 'INVALIDATED', 'TARGET1_HIT', 'TARGET2_HIT', 'STOPPED', 'EXPIRED']
+SignalState = Literal['CANDIDATE', 'EARLY_SETUP', 'CONFIRMED', 'INVALIDATED', 'TARGET1_HIT', 'TARGET2_HIT', 'STOPPED', 'EXPIRED']
 
 
 def instant(value):
@@ -123,5 +123,6 @@ class SignalRecord:
     confirmed_t1_rr: float | None = None
     confirmed_t2_rr: float | None = None
     last_bar_end: str | None = None
+    trigger_watch: dict = field(default_factory=dict)
     history: tuple[LifecycleEvent, ...] = ()
     outcome: dict = field(default_factory=dict)

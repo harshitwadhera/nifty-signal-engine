@@ -5,9 +5,10 @@ from threading import Event, RLock, Thread
 from uuid import uuid4
 import logging
 
-from app.signals.execution_models import instant
+from app.signals.execution_models import ExecutionConfig, instant
 from .monitor import SYMBOLS, fresh, observe, price
 from .storage import TradeJournal
+from app.signals.selection import select_option
 
 logger = logging.getLogger('market_app')
 
@@ -54,9 +55,11 @@ class TradeService:
         lot = contract.get('lot_size')
         valid_lot = isinstance(lot, int) and not isinstance(lot, bool) and lot > 0
         coordinate_ok = (plan.get('entry_trigger') or {}).get('instrument') == SYMBOLS[index]
-        state = 'WAITING' if record.get('state') == 'CANDIDATE' else 'READY' if record.get('state') == 'CONFIRMED' else 'NO_TRADE'
+        state = ('WAITING' if record.get('state') == 'CANDIDATE' else
+                 'EARLY_RISK' if record.get('state') == 'EARLY_SETUP' else
+                 'READY' if record.get('state') == 'CONFIRMED' else 'NO_TRADE')
         reason = None
-        if state == 'READY':
+        if state in ('EARLY_RISK', 'READY'):
             if not coordinate_ok:
                 reason = 'This signal uses futures levels; an index-based stop is required for manual tracking.'
             elif current is None or self.quote(contract) is None or view.get('data_quality', {}).get('stale', True):
@@ -69,6 +72,7 @@ class TradeService:
                 sign = 1 if plan.get('direction') == 'CALL' else -1
                 stop = price((plan.get('invalidation') or {}).get('level'))
                 target = price((plan.get('target1') or {}).get('level'))
+                trigger = price((plan.get('entry_trigger') or {}).get('level'))
                 confirmation = record.get('confirmation_price')
                 if confirmation is None:
                     confirmation = record.get('outcome', {}).get('entry_underlying')
@@ -77,7 +81,32 @@ class TradeService:
                         not (sign*(value-stop) > 0 and sign*(target-value) > 0) for value in coordinates)):
                     reason = 'Underlying has already reached the structural stop or first target; this setup is no longer actionable.'
                     state = 'NO_TRADE'
-        return {'index': index, 'setup_state': state, 'can_confirm': state == 'READY' and reason is None,
+                elif state == 'EARLY_RISK' and (trigger is None or sign*(current-trigger) <= 0):
+                    reason = 'Underlying has fallen back through the live trigger; a new trigger breach is required.'
+                    state = 'NO_TRADE'
+                elif state == 'EARLY_RISK':
+                    risk = sign*(current-stop)
+                    reward = sign*(target-current)
+                    config = getattr(getattr(getattr(self.signals, 'lifecycle', None), 'planner', None), 'config', None)
+                    minimum_rr = getattr(config, 'minimum_t1_rr', None)
+                    if not isinstance(minimum_rr, (int, float)):
+                        minimum_rr = ExecutionConfig().minimum_t1_rr
+                    if risk <= 0 or reward <= 0 or reward/risk < minimum_rr:
+                        reason = 'Current early-entry risk/reward is below the minimum.'
+                        state = 'NO_TRADE'
+                    else:
+                        try:
+                            summary, rows = self.options.response(index)
+                            current_snapshot = self.signals.snapshot(index, option_summary=summary)
+                            selected = select_option(current_snapshot, plan.get('direction'), rows,
+                                                    self.signals.lifecycle.planner.config)
+                            if selected is None or selected.instrument_token != option.get('instrument_token'):
+                                reason = 'Selected option is no longer eligible; refresh the setup.'
+                                state = 'NO_TRADE'
+                        except Exception:
+                            reason = 'Current option eligibility could not be verified.'
+                            state = 'NO_TRADE'
+        return {'index': index, 'setup_state': state, 'can_confirm': state in ('EARLY_RISK', 'READY') and reason is None,
                 'reason': reason, 'signal': view, 'lot_size': lot if valid_lot else None,
                 'option_ltp': self.quote(contract), 'underlying_current': current,
                 'fresh': current is not None, 'server_time': instant(now).isoformat(),
@@ -91,12 +120,17 @@ class TradeService:
             record = detail['record']
             plan = record['plan']
             setup = self.setup(plan['index_name'])
-            if record['state'] != 'CONFIRMED' or not setup['can_confirm'] or (setup['signal'].get('record') or {}).get('signal_id') != signal_id:
-                raise ValueError(setup.get('reason') or 'A current CONFIRMED signal is required.')
+            if record['state'] not in ('EARLY_SETUP', 'CONFIRMED') or not setup['can_confirm'] or (setup['signal'].get('record') or {}).get('signal_id') != signal_id:
+                raise ValueError(setup.get('reason') or 'A current EARLY_SETUP or CONFIRMED signal is required.')
             if body.quantity != body.lots*setup['lot_size']:
                 raise ValueError('Quantity must equal lots multiplied by the actual contract lot size.')
             now, opened = instant(self.clock()), instant(body.opened_at)
-            confirmation_time = record.get('outcome', {}).get('entry_time') or record['updated_at']
+            confirmation_time = record.get('outcome', {}).get('entry_time')
+            if confirmation_time is None and record['state'] == 'EARLY_SETUP':
+                history = record.get('history') if isinstance(record.get('history'), list) else []
+                confirmation_time = next((event.get('at') for event in reversed(history)
+                    if isinstance(event, dict) and event.get('state') == 'EARLY_SETUP'), None)
+            confirmation_time = confirmation_time or record['updated_at']
             if not instant(confirmation_time) <= opened <= now or (now-opened).total_seconds() > 300:
                 raise ValueError('Entry time must be after confirmation and within the last five minutes.')
             sign = 1 if plan['direction'] == 'CALL' else -1
@@ -114,6 +148,7 @@ class TradeService:
                 target2=(plan.get('target2') or {}).get('level'), opened_at=opened.isoformat(),
                 closed_at=None, status='ACTIVE', exit_reason=None, exit_underlying=None, exit_option_price=None,
                 monitoring_status='LIVE', metadata={'hits': [], 'data_gap_count': 0,
+                    'signal_state_at_entry': record['state'],
                     'last_observation_at': now.isoformat(), 'current_underlying': setup['underlying_current'],
                     'recorded_at': now.isoformat(), 'signal_plan': plan})
             self.journal.save(trade, create=True)

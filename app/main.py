@@ -171,7 +171,7 @@ def create_app(settings=None, client_factory=None, session=None, provider=None, 
     @app.get('/api/signals/history')
     def signal_history(limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0, le=100000),
                        index: Literal['nifty', 'banknifty'] | None = None,
-                       state: Literal['CANDIDATE', 'CONFIRMED', 'INVALIDATED', 'TARGET1_HIT', 'TARGET2_HIT', 'STOPPED', 'EXPIRED'] | None = None,
+                       state: Literal['CANDIDATE', 'EARLY_SETUP', 'CONFIRMED', 'INVALIDATED', 'TARGET1_HIT', 'TARGET2_HIT', 'STOPPED', 'EXPIRED'] | None = None,
                        direction: Literal['CALL', 'PUT'] | None = None,
                        date_from: date | None = None, date_to: date | None = None):
         if date_from and date_to and date_from > date_to:

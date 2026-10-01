@@ -73,6 +73,25 @@ test('NO TRADE and WAIT FOR TRIGGER have no entry button',async()=>{
     assert.equal(h.sounds(),0);
   }
 });
+test('EARLY_RISK shows a distinct warning and requires explicit manual confirmation',async()=>{
+  const s=setup('EARLY_RISK');
+  s.can_confirm=true;
+  s.signal.record.state='EARLY_SETUP';
+  const h=await harness(s),panel=h.elements['nifty-trade'];
+  assert.match(text(panel),/EARLY CALL SETUP/);
+  assert.match(text(panel),/EARLY \/ MANUAL/);
+  assert.match(text(panel),/before normal 5-minute confirmation/);
+  const take=button(panel,'I TOOK THIS TRADE'); assert.ok(take);
+  assert.equal(h.data.trade,null);
+  take.listeners.click(); await flush();
+  const form=find(h.body,n=>n.tag==='form');
+  assert.match(text(form),/higher-risk early trade/);
+  assert.match(text(form),/EARLY_SETUP/);
+  assert.equal(h.calls.filter(c=>c.options.method==='POST').length,0);
+  await form.listeners.submit({preventDefault(){}});
+  assert.ok(h.calls.some(c=>c.url.endsWith('/confirm') && c.options.method==='POST'));
+});
+
 test('READY dialog defaults actual lot size, allows premium edit and sends only on confirm',async()=>{
   const h=await harness(),panel=h.elements['nifty-trade'];
   assert.match(text(panel),/READY/); assert.match(text(panel),/UNDERLYING STOP/);

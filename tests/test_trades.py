@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.main import create_app
 from app.config import Settings
 from app.signals.execution_models import instant
+from app.signals.models import SignalInput
 from app.trades.models import Confirmation, Closure
 from app.trades.monitor import observe
 from app.trades.service import TradeService
@@ -30,7 +31,7 @@ def signal(index='NIFTY', direction='CALL'):
                  'target1': {'level':25000 if direction == 'CALL' else 24800},
                  'target2': {'level':25100 if direction == 'CALL' else 24700},
                  't1_rr':1.5, 't2_rr':2,
-                 'option': {'trading_symbol': index+'TEST', 'instrument_token': 123, 'expiry':'2026-09-29',
+                 'option': {'trading_symbol': 'NIFTY24900CE' if direction == 'CALL' else 'NIFTY24900PE', 'instrument_token': 123, 'expiry':'2026-09-29',
                             'option_type':'CE' if direction == 'CALL' else 'PE', 'strike':24900}}}
 
 
@@ -40,9 +41,36 @@ def service(tmp_path):
     signals, stream, options = Mock(), Mock(), Mock()
     signals.detail.side_effect = lambda sid: {'record': deepcopy(record)} if sid == record['signal_id'] else None
     signals.current.side_effect = lambda index: {'index':index,'record':deepcopy(record), 'data_quality':{'stale':False}}
-    stream.live.return_value = {'websocket_status':'connected', 'instruments':[observation()]}
-    options.response.return_value = ({},[{**record['plan']['option'], 'lot_size':65, 'ltp':101,
-        'stale':False, 'received_at':NOW.isoformat(), 'timestamp':NOW.isoformat()}])
+    signals.snapshot.side_effect = lambda index, option_summary=None: SignalInput(
+        index, NOW.isoformat(), {'spot':24910}, option_summary or {
+            'selected_expiry':'2026-09-29',
+            'expiry_selection':{'analysis_expiry':'2026-09-29'},
+            'coverage':{'expected_contracts':4},
+        })
+    stream.live.return_value = {'websocket_status':'connected', 'instruments':[observation(24910)]}
+    option_rows = [
+        dict(index='NIFTY', expiry='2026-09-29', strike=24900, option_type='CE',
+             instrument_token=123, trading_symbol='NIFTY24900CE', lot_size=65, ltp=101,
+             stale=False, liquidity_state='LIQUID', bid=100, ask=101, bid_quantity=100,
+             ask_quantity=100, oi=2000, volume=200, received_at=NOW.isoformat(), timestamp=NOW.isoformat()),
+        dict(index='NIFTY', expiry='2026-09-29', strike=24900, option_type='PE',
+             instrument_token=124, trading_symbol='NIFTY24900PE', lot_size=65, ltp=101,
+             stale=False, liquidity_state='LIQUID', bid=100, ask=101, bid_quantity=100,
+             ask_quantity=100, oi=2000, volume=200, received_at=NOW.isoformat(), timestamp=NOW.isoformat()),
+        dict(index='NIFTY', expiry='2026-09-29', strike=25000, option_type='CE',
+             instrument_token=125, trading_symbol='NIFTY25000CE', lot_size=65, ltp=90,
+             stale=False, liquidity_state='LIQUID', bid=89, ask=90, bid_quantity=100,
+             ask_quantity=100, oi=2000, volume=200, received_at=NOW.isoformat(), timestamp=NOW.isoformat()),
+        dict(index='NIFTY', expiry='2026-09-29', strike=25000, option_type='PE',
+             instrument_token=126, trading_symbol='NIFTY25000PE', lot_size=65, ltp=90,
+             stale=False, liquidity_state='LIQUID', bid=89, ask=90, bid_quantity=100,
+             ask_quantity=100, oi=2000, volume=200, received_at=NOW.isoformat(), timestamp=NOW.isoformat()),
+    ]
+    options.response.return_value = ({
+        'selected_expiry':'2026-09-29',
+        'expiry_selection':{'analysis_expiry':'2026-09-29'},
+        'coverage':{'expected_contracts':4},
+    }, option_rows)
     result = TradeService(stream, signals, options, tmp_path/'trades.sqlite3', clock=lambda: NOW)
     result.test_record = record
     yield result
@@ -66,6 +94,24 @@ def test_explicit_confirmation_only_quantity_and_premium(service):
     assert trade['quantity'] == trade['lots']*trade['lot_size'] == 65
     assert service.journal.get(trade['trade_id']) == trade
     with pytest.raises(ValueError): entered(service)
+
+
+
+def test_early_setup_requires_explicit_manual_click_before_monitoring(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+        'reason': '1m continuation',
+    }]
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'EARLY_RISK'
+    assert setup['can_confirm'] is True
+    service.poll()
+    assert service.active()['total'] == 0
+    trade = entered(service)
+    assert trade['metadata']['signal_state_at_entry'] == 'EARLY_SETUP'
+    assert service.active()['total'] == 1
 
 
 def test_candidate_quantity_time_and_coordinate_rejected(service):
@@ -268,3 +314,44 @@ def test_opportunity_api_combines_confirmed_signal_with_taken_flag(service):
     assert data['items'][0]['confirmed_at'] == '2026-09-25T10:05:00+05:30'
     assert data['items'][0]['manual_trade']['trade_id'] == 'trade-1'
     service.journal.close()
+
+
+def test_early_setup_requires_live_price_to_remain_beyond_trigger(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+    }]
+    service.stream.live.return_value = {'websocket_status':'connected', 'instruments':[observation(24899)]}
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'NO_TRADE'
+    assert setup['can_confirm'] is False
+    assert 'fallen back through the live trigger' in setup['reason']
+    with pytest.raises(ValueError):
+        entered(service)
+
+
+def test_early_setup_rejects_current_risk_reward_below_minimum(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+    }]
+    service.stream.live.return_value = {'websocket_status':'connected', 'instruments':[observation(24999)]}
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'NO_TRADE'
+    assert setup['can_confirm'] is False
+    assert 'risk/reward' in setup['reason']
+
+
+def test_early_setup_rejects_no_longer_eligible_option(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['history'] = [{
+        'state': 'EARLY_SETUP',
+        'at': (NOW-timedelta(seconds=30)).isoformat(),
+    }]
+    service.options.response.return_value[1][0]['stale'] = True
+    setup = service.setup('NIFTY')
+    assert setup['setup_state'] == 'NO_TRADE'
+    assert setup['can_confirm'] is False
+    assert 'option' in setup['reason'].lower()
