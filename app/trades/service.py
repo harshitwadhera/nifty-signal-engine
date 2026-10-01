@@ -8,6 +8,7 @@ import logging
 from app.signals.execution_models import instant
 from .monitor import SYMBOLS, fresh, observe, price
 from .storage import TradeJournal
+from app.signals.selection import select_option
 
 logger = logging.getLogger('market_app')
 
@@ -71,6 +72,7 @@ class TradeService:
                 sign = 1 if plan.get('direction') == 'CALL' else -1
                 stop = price((plan.get('invalidation') or {}).get('level'))
                 target = price((plan.get('target1') or {}).get('level'))
+                trigger = price((plan.get('entry_trigger') or {}).get('level'))
                 confirmation = record.get('confirmation_price')
                 if confirmation is None:
                     confirmation = record.get('outcome', {}).get('entry_underlying')
@@ -79,6 +81,27 @@ class TradeService:
                         not (sign*(value-stop) > 0 and sign*(target-value) > 0) for value in coordinates)):
                     reason = 'Underlying has already reached the structural stop or first target; this setup is no longer actionable.'
                     state = 'NO_TRADE'
+                elif state == 'EARLY_RISK' and (trigger is None or sign*(current-trigger) <= 0):
+                    reason = 'Underlying has fallen back through the live trigger; a new trigger breach is required.'
+                    state = 'NO_TRADE'
+                elif state == 'EARLY_RISK':
+                    risk = sign*(current-stop)
+                    reward = sign*(target-current)
+                    if risk <= 0 or reward <= 0 or reward/risk < self.signals.lifecycle.planner.config.minimum_t1_rr:
+                        reason = 'Current early-entry risk/reward is below the minimum.'
+                        state = 'NO_TRADE'
+                    else:
+                        try:
+                            summary, rows = self.options.response(index)
+                            current_snapshot = self.signals.snapshot(index, option_summary=summary)
+                            selected = select_option(current_snapshot, plan.get('direction'), rows,
+                                                    self.signals.lifecycle.planner.config)
+                            if selected is None or selected.instrument_token != option.get('instrument_token'):
+                                reason = 'Selected option is no longer eligible; refresh the setup.'
+                                state = 'NO_TRADE'
+                        except Exception:
+                            reason = 'Current option eligibility could not be verified.'
+                            state = 'NO_TRADE'
         return {'index': index, 'setup_state': state, 'can_confirm': state in ('EARLY_RISK', 'READY') and reason is None,
                 'reason': reason, 'signal': view, 'lot_size': lot if valid_lot else None,
                 'option_ltp': self.quote(contract), 'underlying_current': current,
