@@ -114,9 +114,9 @@
   function confirm(setup) {
     arm();
     const r = setup.signal.record, p = r.plan;
-    dialog('Confirm your manual trade', [['Signal ID', r.signal_id], ['Index', setup.index],
+    dialog(setup.setup_state === 'EARLY_RISK' ? 'Confirm higher-risk early trade' : 'Confirm your manual trade', [['Signal ID', r.signal_id], ['Index', setup.index],
       ['Option contract', p.option.trading_symbol], ['Direction', p.direction], ['Lot size', setup.lot_size],
-      ['Journal only', 'This records a trade you already placed manually. No order will be sent.']], [
+      ['Signal state', r.state], ['Journal only', 'This records a trade you already placed manually. No order will be sent.']], [
       {name:'lots', label:'Lots', value:1, min:1, step:1},
       {name:'quantity', label:'Quantity', value:setup.lot_size, min:1, step:1},
       {name:'actual_entry_premium', label:'Actual option entry premium', value:setup.option_ltp},
@@ -181,7 +181,7 @@
       button(box, 'I EXITED THE TRADE', () => close(trade));
     } else {
       const state = setup?.setup_state === 'READY' && !setup.can_confirm ? 'NO_TRADE' : setup?.setup_state || 'NO_TRADE';
-      box.append(el('h3', state === 'NO_TRADE' ? 'NO TRADE' : state === 'WAITING' ? 'WAIT FOR TRIGGER' : 'READY'));
+      box.append(el('h3', state === 'NO_TRADE' ? 'NO TRADE' : state === 'WAITING' ? 'WAIT FOR TRIGGER' : state === 'EARLY_RISK' ? `EARLY ${setup?.signal?.record?.plan?.direction || ''} SETUP` : 'READY'));
       if (state !== 'NO_TRADE') {
         const signal = setup.signal, r = signal.record, p = r.plan;
         fields(box, [['Direction', p.direction], ['Selected option', p.option.trading_symbol], ['Expiry', p.option.expiry],
@@ -192,8 +192,10 @@
           ['T1', setup.index_levels ? p.target1.level : null], ['T2', setup.index_levels ? p.target2?.level : null],
           ['T1 R:R', r.confirmed_t1_rr ?? p.t1_rr], ['T2 R:R', r.confirmed_t2_rr ?? p.t2_rr],
           ['Confidence', signal.confidence], ['Liquidity at selection', `spread ${p.option.spread_percent}% · OI ${p.option.oi} · volume ${p.option.volume}`],
-          ['Freshness', setup.fresh ? 'Fresh underlying observation' : 'STALE']]);
+          ['Freshness', setup.fresh ? 'Fresh underlying observation' : 'STALE'],
+          ['Risk status', state === 'EARLY_RISK' ? 'EARLY / MANUAL' : 'NORMAL CONFIRMATION']]);
         if (state === 'WAITING') box.append(el('p', 'No active stop monitoring until you confirm a manual trade.'));
+        if (state === 'EARLY_RISK') box.append(el('p', 'This is an early setup before normal 5-minute confirmation. No automatic trade is placed.', 'trade-paused'));
         if (setup.can_confirm) button(box, 'I TOOK THIS TRADE', () => confirm(setup));
       }
       if (setup?.reason) {
