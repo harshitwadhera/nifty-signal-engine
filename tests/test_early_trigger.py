@@ -167,10 +167,16 @@ def test_stale_out_of_order_and_duplicate_ticks_do_not_create_false_breaches():
         assert manager.observe_tick('NIFTY 50', 101, created - timedelta(seconds=1), created) == record
         assert manager.observe_tick('NIFTY 50', 101, created + timedelta(seconds=1),
             created + timedelta(seconds=70)) == record
-        accepted = manager.observe_tick('NIFTY 50', 101, created + timedelta(seconds=2),
-            created + timedelta(seconds=2))
-        duplicate = manager.observe_tick('NIFTY 50', 102, created + timedelta(seconds=2),
-            created + timedelta(seconds=2))
+        # A newer non-breach event establishes the event-time watermark. An older
+        # crossing arriving later must not create a false breach.
+        assert manager.observe_tick('NIFTY 50', 99.9, created + timedelta(seconds=3),
+            created + timedelta(seconds=3)).trigger_watch == {}
+        assert manager.observe_tick('NIFTY 50', 101, created + timedelta(seconds=2),
+            created + timedelta(seconds=4)).trigger_watch == {}
+        accepted = manager.observe_tick('NIFTY 50', 101, created + timedelta(seconds=4),
+            created + timedelta(seconds=4))
+        duplicate = manager.observe_tick('NIFTY 50', 102, created + timedelta(seconds=4),
+            created + timedelta(seconds=4))
         assert accepted.trigger_watch['breached_at'] == duplicate.trigger_watch['breached_at']
         assert len(duplicate.history) == 1
     finally:
