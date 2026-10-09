@@ -30,7 +30,30 @@ test('NO TRADE is a normal neutral result with reasons',async()=>{
   assert.equal(panel.children[0].children[0].className,'signal-neutral');
   assert.match(text(panel),/Winning score below minimum/);
   assert.match(text(panel),/No active signal/);
+  assert.match(text(panel),/NOT APPLICABLE — no active setup/);
+  assert.doesNotMatch(text(panel),/Trigger status WAITING/);
   assert.deepEqual(calls,['/api/signals/current']);
+});
+
+test('entry diagnostics distinguish pullback, current RR and historical planned RR',async()=>{
+  const {elements}=await render({decision:'PUT',state:'CANDIDATE',data_quality:{stale:false},
+    entry_diagnostics:{status:'WAITING_FOR_PULLBACK',reason:'Current entry risk/reward below minimum',
+      underlying:54499,t1_rr:1.28508,minimum_t1_rr:1.5,expires_at:'2026-10-08T15:00:00+05:30'},
+    record:{plan:{t1_rr:9.14778,entry_trigger:{type:'breakout_retest',level:54568.85}}}});
+  const content=text(elements['nifty-signal']);
+  for(const value of ['WAITING FOR PULLBACK','Current entry risk/reward below minimum',
+    'T1 R:R (plan) 9.15','T1 R:R (current price) 1.29','Minimum entry R:R 1.5','Candidate deadline'])
+    assert.ok(content.includes(value),value);
+});
+
+test('terminal signal never displays a waiting trigger even with an old breach',async()=>{
+  const {elements}=await render({decision:'NO_TRADE',state:'INVALIDATED',
+    record:{trigger_watch:{breached_at:'2026-10-08T11:25:50+05:30',breach_price:22358.85}},
+    entry_diagnostics:{status:'INVALIDATED',reason:'First target reached before entry'}});
+  const content=text(elements['nifty-signal']);
+  assert.match(content,/Trigger status INVALIDATED/);
+  assert.match(content,/First target reached before entry/);
+  assert.doesNotMatch(content,/Trigger status WAITING/);
 });
 test('directional panel shows plan, categories, evidence and outcomes',async()=>{
   const {elements}=await render({decision:'CALL',state:'CONFIRMED',confidence:85,bullish_score:85,bearish_score:5,

@@ -7,7 +7,7 @@ from threading import Event, Thread, RLock
 from queue import Empty, Queue
 import logging
 from .execution_models import ExecutionConfig, instant
-from .planning import SignalPlanner
+from .planning import SignalPlanner, risk_reward
 from .lifecycle import SignalJournal, SignalLifecycle, Submission
 from .structure import completed_bars, confirmed_swings
 from .explanation import safe
@@ -113,6 +113,38 @@ class LiveSignals:
         result['score_expiry_selection'] = ((original or {}).get('input', {}).get('options', {}).get('expiry_selection', {})
                                              if active and original_scores else scored['expiry_selection'])
         result['score_basis'] = 'candidate_creation' if active and original_scores else 'current_observation'
+        entry = {'status': 'NOT_APPLICABLE', 'reason': '; '.join(quality.get('blocking_reasons', ()))
+                 or '; '.join(submission.reasons), 'underlying': None, 't1_rr': None}
+        if record:
+            entry['status'] = record.state
+            entry['reason'] = record.history[-1].reason if record.history else ''
+        if active:
+            plan = record.plan
+            is_spot = plan.entry_trigger.instrument in ('NIFTY 50', 'NIFTY BANK')
+            price = positive(snapshot.structure.get('spot' if is_spot else 'future'))
+            rr = risk_reward(plan.direction, price, plan.invalidation.level, plan.target1.level) if price else None
+            entry.update(underlying=price if not quality['stale'] else None,
+                         t1_rr=rr if not quality['stale'] else None,
+                         minimum_t1_rr=self.lifecycle.config.minimum_t1_rr,
+                         expires_at=record.expires_at)
+            if record.state in ('CANDIDATE', 'EARLY_SETUP'):
+                if quality['stale']:
+                    entry.update(status='DATA_UNAVAILABLE', reason='Waiting for fresh signal data')
+                elif decision.decision != plan.direction:
+                    entry.update(status='QUALIFICATION_BLOCKED',
+                        reason='; '.join(quality.get('blocking_reasons', ())) or 'Current direction no longer supports this setup')
+                elif rr is None or rr < self.lifecycle.config.minimum_t1_rr:
+                    entry.update(status='WAITING_FOR_PULLBACK',
+                        reason='Current entry risk/reward below minimum; waiting for a pullback and new trigger evidence')
+                elif record.trigger_watch.get('breached_at'):
+                    entry.update(status='WAITING_FOR_CONFIRMATION',
+                        reason=(record.trigger_watch.get('structure_1m') or {}).get('reason')
+                        or 'Live breach observed; waiting for completed candle confirmation')
+                elif plan.entry_trigger.type == 'breakout_retest':
+                    entry.update(status='WAITING_FOR_RETEST', reason='Waiting for a fresh retest of the broken structural level')
+                else:
+                    entry.update(status='WAITING_FOR_TRIGGER', reason='Waiting for a live structural trigger breach')
+        result['entry_diagnostics'] = entry
         if not active:
             result['confidence'] = 0
         with self.view_lock:

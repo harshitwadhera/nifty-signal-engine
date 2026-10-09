@@ -147,3 +147,7 @@ Options scoring uses independent component availability. Overall chain coverage 
 informational; expand **OPTIONS DATA QUALITY** for ATM, positioning, wall, and PCR
 availability. See [Options component availability](docs/options-component-availability.md)
 for compatibility details. The winning-score gate is 60/100; category budgets still sum to 100 and the other qualification gates are unchanged.
+
+See [Signal entry timing and diagnostics](docs/signal-entry-lifecycle.md) for
+bounded late-breach confirmation, retest handling, existing-contract validation,
+and the distinction between planned and current-entry risk/reward.

@@ -27,7 +27,12 @@ def liquid(row, now, config):
             and volume is not None and volume >= config.minimum_volume)
 
 
-def select_option(snapshot, direction, rows, config):
+def select_option(snapshot, direction, rows, config, *, existing=None):
+    """Choose ATM/one-step ITM, or revalidate the exact existing contract.
+
+    Preference is not eligibility: an existing one-step ITM remains eligible
+    when a different liquid ATM becomes the first choice. Never switch tokens.
+    """
     if direction not in ('CALL', 'PUT'):
         return None
     now = instant(snapshot.as_of)
@@ -68,6 +73,11 @@ def select_option(snapshot, direction, rows, config):
         if len(matches) != 1:
             continue
         row = matches[0]
+        if existing is not None:
+            identity = existing if isinstance(existing, dict) else vars(existing)
+            if any(row.get(key) != identity.get(key) for key in
+                   ('instrument_token', 'trading_symbol', 'strike', 'option_type', 'expiry')):
+                continue
         token = row.get('instrument_token')
         if (not isinstance(token, int) or isinstance(token, bool) or token <= 0
                 or not isinstance(row.get('trading_symbol'), str) or not row['trading_symbol'] or not liquid(row, now, config)):

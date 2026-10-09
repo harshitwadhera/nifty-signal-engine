@@ -126,19 +126,31 @@
     const record = data.record, plan = record?.plan, outcome = record?.outcome;
     const trigger = plan?.entry_trigger, option = plan?.option;
     const watch = record?.trigger_watch || {}, earlyStructure = watch.structure_1m || {};
+    const entry = data.entry_diagnostics || {};
+    const active = ['CANDIDATE','EARLY_SETUP','CONFIRMED','TARGET1_HIT'].includes(data.state);
+    const triggerStatus = !active ? (data.state || 'NOT APPLICABLE — no active setup') :
+      ['CONFIRMED','TARGET1_HIT'].includes(data.state) ? 'CONFIRMED' :
+      entry.status ? entry.status.replaceAll('_', ' ') :
+      watch.breached_at ? 'WAITING FOR CONFIRMATION' :
+      trigger?.type === 'breakout_retest' ? 'WAITING FOR RETEST' : 'WAITING FOR TRIGGER';
     const rows = [
       ['State', data.state || 'No active signal'], ['Confidence (score / 100)', data.confidence],
+      ['Entry status', triggerStatus], ['Entry explanation', entry.reason || null],
       ['Freshness', data.data_quality?.stale ? 'STALE / waiting for usable data' : 'Current observation'],
       ['Score basis', data.score_basis === 'candidate_creation' ? 'Recorded at candidate creation' : 'Current qualification'],
       ['Bullish score', data.bullish_score], ['Bearish score', data.bearish_score],
       ['Entry trigger', trigger ? `${trigger.type} · ${format(trigger.level)} · ${trigger.confirmation} · ${trigger.instrument}` : null],
-      ['Trigger status', watch.breached_at ? `BREACHED · ${stamp(watch.breached_at)} @ ${format(watch.breach_price)}` : 'WAITING'],
+      ['Trigger status', triggerStatus],
+      ['Last recorded breach', watch.breached_at ? `BREACHED · ${stamp(watch.breached_at)} @ ${format(watch.breach_price)}` : null],
       ['1m structure', early ? earlyStructure.direction || 'DEVELOPING' : earlyStructure.direction],
       ['Retest / rejection', early ? (earlyStructure.retest_rejection ? 'CONFIRMED' : earlyStructure.continuation_structure ? 'CONTINUATION STRUCTURE' : 'PENDING') : null],
       ['5m confirmation', early ? 'PENDING' : record?.state === 'CONFIRMED' ? 'CONFIRMED' : null],
       ['Risk status', early ? 'EARLY / MANUAL' : null],
       ['Invalidation', plan?.invalidation?.level], ['T1', plan?.target1?.level], ['T2', plan?.target2?.level],
       ['T1 R:R (plan)', plan?.t1_rr], ['T2 R:R (plan)', plan?.t2_rr],
+      ['Current underlying', entry.underlying], ['T1 R:R (current price)', entry.t1_rr],
+      ['Minimum entry R:R', entry.minimum_t1_rr],
+      ['Candidate deadline', active && ['CANDIDATE','EARLY_SETUP'].includes(data.state) ? stamp(entry.expires_at || record?.expires_at) : null],
       ['T1 R:R (confirmation)', record?.confirmed_t1_rr],
       ['Selected option', option ? `${option.trading_symbol} · ${option.expiry} · ${option.strike} ${option.option_type}` : null],
       ['Liquidity at selection', option ? `Qualified · spread ${format(option.spread_percent)}% · OI ${format(option.oi)} · volume ${format(option.volume)}` : null],

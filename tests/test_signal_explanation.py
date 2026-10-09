@@ -11,6 +11,7 @@ from app.main import create_app
 from app.signals import SignalConfig, SignalEngine
 from app.signals.execution_models import ExecutionConfig
 from app.signals.live import LiveSignals
+from app.signals.lifecycle import Submission
 from app.signals.planning import SignalPlanner
 from test_decisions import ready
 from test_execution import example
@@ -168,5 +169,37 @@ def test_active_creation_scores_and_expiry_remain_separate_from_current_gates():
         assert data['score_expiry_selection']['analysis_expiry'] == '2026-09-28'
         assert data['expiry_selection']['analysis_expiry'] == '2026-10-06'
         assert next(g for g in data['qualification_gates'] if g['key'] == 'options_signal_data')['status'] == 'BLOCK'
+    finally:
+        live.close()
+
+
+def test_current_entry_diagnostics_are_separate_from_planned_rr_and_clear_when_stale():
+    from test_execution import move
+    sample, rows, engine = example()
+    engine.config = SignalConfig()
+    engine.decide.return_value = SignalEngine().decide(ready())
+    stream = Mock()
+    live = LiveSignals(stream, Mock(), Mock(), Mock())
+    live.engine = engine
+    live.lifecycle.planner = SignalPlanner(engine)
+    try:
+        submission = live.lifecycle.submit(sample, rows)
+        later, quotes = move(sample, rows, 1, 104)
+        stream.state.clock.return_value = datetime.fromisoformat(later.as_of)
+        record = live.lifecycle.advance(submission.record.signal_id, later, quotes)
+        live._publish('NIFTY', later, Submission('NO_TRADE', record, False, ()))
+        data = live.current('NIFTY')
+        assert data['entry_diagnostics']['status'] == 'WAITING_FOR_PULLBACK'
+        assert data['entry_diagnostics']['t1_rr'] == 1.2
+        assert data['record']['plan']['t1_rr'] == 10
+        assert data['record']['entry_diagnostics']['underlying'] == 104
+        decision = engine.decide.return_value
+        engine.decide.return_value = replace(decision, decision='NO_TRADE',
+            data_quality={**decision.data_quality, 'structure_fresh':False})
+        live._publish('NIFTY', later, Submission('NO_TRADE', record, False, ()))
+        data = live.current('NIFTY')
+        assert data['entry_diagnostics']['status'] == 'DATA_UNAVAILABLE'
+        assert data['entry_diagnostics']['t1_rr'] is None
+        assert data['entry_diagnostics']['underlying'] is None
     finally:
         live.close()

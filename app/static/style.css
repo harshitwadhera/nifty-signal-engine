@@ -87,6 +87,9 @@ dialog{box-sizing:border-box;max-width:min(560px,calc(100% - 32px))}
 .signal-decision-info.open .signal-info-popover:not([hidden]){display:block}
 .signal-info-close{position:sticky;top:0;z-index:1;display:block;margin:0 0 8px auto}
 .signal-info-popover .signal-table{margin:0}
+.signal-info-popover th:first-child,.signal-info-popover td:first-child{white-space:nowrap;overflow-wrap:normal;min-width:4.5em}
+.signal-info-popover th:nth-child(2),.signal-info-popover td:nth-child(2){min-width:8em;overflow-wrap:normal}
+.signal-info-popover th:nth-child(3),.signal-info-popover td:nth-child(3){min-width:18em}
 .signal-info-popover .signal-table:focus-visible{outline:2px solid #93c5fd;outline-offset:-2px}
 @media(max-width:650px){.signal-info-popover{position:fixed;left:16px;right:16px;top:16px;width:auto;
   max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px)}}
