@@ -99,7 +99,7 @@ class TradeService:
                             summary, rows = self.options.response(index)
                             current_snapshot = self.signals.snapshot(index, option_summary=summary)
                             selected = select_option(current_snapshot, plan.get('direction'), rows,
-                                                    self.signals.lifecycle.planner.config)
+                                                    self.signals.lifecycle.planner.config, existing=option)
                             if selected is None or selected.instrument_token != option.get('instrument_token'):
                                 reason = 'Selected option is no longer eligible; refresh the setup.'
                                 state = 'NO_TRADE'

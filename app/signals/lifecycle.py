@@ -255,7 +255,8 @@ class SignalLifecycle:
         with self._operation():
             record = next((r for r in self.records.values()
                 if r.state in ('CANDIDATE', 'EARLY_SETUP') and r.plan.entry_trigger.instrument == symbol), None)
-            if record is None or now < instant(record.created_at):
+            if (record is None or now < instant(record.created_at)
+                    or now >= instant(record.expires_at) or received >= instant(record.expires_at)):
                 return record
             previous = self.last_trigger_ticks.get(symbol)
             if previous is not None and now <= previous:
@@ -267,6 +268,14 @@ class SignalLifecycle:
             level = record.plan.entry_trigger.level
             sign = 1 if record.plan.direction == 'CALL' else -1
             if sign*(price-level) <= 0:
+                if record.plan.entry_trigger.type == 'breakout_retest':
+                    watch['retest_observed_at'] = now.isoformat()
+                    return self._save(replace(record, trigger_watch=watch))
+                return record
+            # A candidate created beyond a broken level is waiting for a retest,
+            # not a new breakout. A first already-beyond tick is not that retest.
+            if (record.plan.entry_trigger.type == 'breakout_retest'
+                    and not watch.get('retest_observed_at')):
                 return record
             watch.update({
                 'signal_id': record.signal_id,
@@ -279,7 +288,20 @@ class SignalLifecycle:
                 'lifecycle_state': record.state,
                 'structure_1m': None,
             })
-            return self._save(replace(record, trigger_watch=watch))
+            # A breach just before the candidate timeout needs enough time for
+            # the next 5m close plus one observation freshness window. Extend
+            # only once, never past the entry cutoff or by more than 5m + age.
+            base_expiry = min(instant(record.created_at)+timedelta(seconds=self.config.candidate_lifetime_seconds),
+                datetime.combine(now.date(), self.config.new_entry_cutoff, now.tzinfo))
+            expires = instant(record.expires_at)
+            if expires == base_expiry:
+                next_close = now.replace(second=0, microsecond=0) + timedelta(minutes=5-now.minute % 5)
+                deadline = min(next_close+timedelta(seconds=self.config.observation_max_age_seconds),
+                    base_expiry+timedelta(seconds=300+self.config.observation_max_age_seconds),
+                    datetime.combine(now.date(), self.config.new_entry_cutoff, now.tzinfo))
+                expires = max(expires, deadline)
+            watch['confirmation_deadline'] = expires.isoformat()
+            return self._save(replace(record, trigger_watch=watch, expires_at=expires.isoformat()))
 
     def _early_structure(self, record, bars, now):
         """Use only completed 1m bars after a live breach; no percentage threshold."""
@@ -355,7 +377,13 @@ class SignalLifecycle:
         try:
             start, end = instant(bar['start_time']), instant(bar['end_time'])
             confirmed = next((instant(e.at) for e in record.history if e.state == 'CONFIRMED'), instant(record.created_at))
-            if (end-start != timedelta(minutes=5) or start < confirmed or
+            overlap = start < confirmed
+            breach = (record.trigger_watch or {}).get('breached_at')
+            # Admit the creation candle only with a live post-creation breach
+            # inside that candle. Historical OHLC alone cannot establish timing.
+            witnessed = (record.state in ('CANDIDATE', 'EARLY_SETUP') and breach
+                         and start <= confirmed <= instant(breach) < end)
+            if (end-start != timedelta(minutes=5) or (overlap and not witnessed) or
                     (record.last_bar_end is not None and end <= instant(record.last_bar_end)) or
                     not 0 <= (now-end).total_seconds() <= self.config.observation_max_age_seconds):
                 return None
@@ -366,6 +394,8 @@ class SignalLifecycle:
             return None
         opened, high, low, close = values
         if not low <= min(opened, close) <= max(opened, close) <= high:
+            return None
+        if overlap and not low <= record.trigger_watch.get('breach_price', float('inf')) <= high:
             return None
         return opened, high, low, close
 
@@ -398,6 +428,8 @@ class SignalLifecycle:
             values = self._bar(record, bar, now)
             if values:
                 record = self._save(replace(record, last_bar_end=instant(bar['end_time']).isoformat()))
+            # Keep conservative stop/target handling even for a witnessed
+            # creation candle: OHLC cannot prove when its extremes occurred.
             high, low = (values[1], values[2]) if values else (price, price)
             sign = 1 if plan.direction == 'CALL' else -1
             adverse = min(low, price) if sign == 1 else max(high, price)
@@ -412,6 +444,14 @@ class SignalLifecycle:
                 return self._transition(record, state, now, 'Underlying structural invalidation touched (stop-first for ambiguous bars)')
             if record.state in ('CANDIDATE', 'EARLY_SETUP'):
                 level = plan.entry_trigger.level
+                current_rr = risk_reward(plan.direction, price, plan.invalidation.level, plan.target1.level)
+                record = self._save(replace(record, entry_diagnostics={
+                    'as_of': now.isoformat(), 'underlying': price, 't1_rr': current_rr,
+                    'minimum_t1_rr': self.config.minimum_t1_rr,
+                }))
+                if sign*(favorable-plan.target1.level) >= 0:
+                    return self._transition(record, 'INVALIDATED', now,
+                        'First target reached before entry; planned opportunity already consumed')
                 current_decision = self.planner.engine.decide(snapshot).decision
                 # EARLY_SETUP is actionable only while the current observation still
                 # supports the original direction. Losing qualification requires a
@@ -425,11 +465,23 @@ class SignalLifecycle:
                 # the lifecycle aligned with the live manual-entry gate.
                 trigger_side = sign*(price-level) > 0
                 if record.trigger_watch and not trigger_side:
+                    reset_watch = ({'retest_observed_at': now.isoformat()}
+                                   if plan.entry_trigger.type == 'breakout_retest' else {})
                     if record.state == 'EARLY_SETUP':
                         return self._transition(record, 'CANDIDATE', now,
                             'Live price recovered through the trigger before 5m confirmation; waiting for a new breach',
-                            trigger_watch={})
-                    record = self._save(replace(record, trigger_watch={}))
+                            trigger_watch=reset_watch)
+                    record = self._save(replace(record, trigger_watch=reset_watch))
+                if trigger_side and (current_rr is None or current_rr < self.config.minimum_t1_rr):
+                    # A pullback can restore entry R:R while the structure remains
+                    # intact. Keep watching within the same bounded lifetime, but
+                    # require fresh timing evidence before making it actionable.
+                    diagnostics = {**record.entry_diagnostics,
+                        'reason': 'Current entry risk/reward below minimum; waiting for a pullback and new trigger evidence'}
+                    if record.state == 'EARLY_SETUP':
+                        return self._transition(record, 'CANDIDATE', now, diagnostics['reason'],
+                            trigger_watch={}, entry_diagnostics=diagnostics)
+                    return self._save(replace(record, trigger_watch={}, entry_diagnostics=diagnostics))
                 early = self._early_structure(record, minute_bars, now)
                 if early and early.get('failed'):
                     if record.state == 'EARLY_SETUP':
@@ -445,19 +497,15 @@ class SignalLifecycle:
                         # Early entry keeps the same contract-eligibility and structural
                         # R:R protections used by normal confirmation. "Early" changes
                         # timing evidence only; it does not relax trade-quality guards.
-                        selected = select_option(snapshot, plan.direction, contracts, self.config)
+                        selected = select_option(snapshot, plan.direction, contracts, self.config, existing=plan.option)
                         if selected is None or selected.instrument_token != plan.option.instrument_token:
                             return self._transition(record, 'INVALIDATED', now,
                                 'Selected contract no longer eligible during early setup')
-                        early_rr = risk_reward(plan.direction, price, plan.invalidation.level, plan.target1.level)
-                        if early_rr is None or early_rr < self.config.minimum_t1_rr:
-                            return self._transition(record, 'INVALIDATED', now,
-                                'Early setup risk/reward below minimum')
                         watch['lifecycle_state'] = 'EARLY_SETUP'
                         record = self._transition(record, 'EARLY_SETUP', now,
                             'Live trigger breach plus completed 1m continuation/retest; 5m confirmation pending',
                             trigger_watch=watch)
-                if not values:
+                if not values or not trigger_side:
                     return record
                 opened, high, low, close = values
                 crossed = sign*(opened-level) <= 0 and sign*(close-level) > 0
@@ -467,9 +515,9 @@ class SignalLifecycle:
                     return record
                 if current_decision != plan.direction:
                     return record
-                # Re-select relative to current spot; an old ATM that drifted far
-                # OTM is never silently retained at confirmation.
-                selected = select_option(snapshot, plan.direction, contracts, self.config)
+                # Validate the existing token against the current ATM/one-step
+                # ITM set, rather than requiring it to remain the first choice.
+                selected = select_option(snapshot, plan.direction, contracts, self.config, existing=plan.option)
                 if selected is None or selected.instrument_token != plan.option.instrument_token:
                     return self._transition(record, 'INVALIDATED', now, 'Selected contract no longer eligible at confirmation')
                 # Do not use the old trigger price to hide a gap/chase. Use the

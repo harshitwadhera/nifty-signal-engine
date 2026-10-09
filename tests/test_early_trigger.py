@@ -166,7 +166,8 @@ def test_stale_out_of_order_and_duplicate_ticks_do_not_create_false_breaches():
         created = instant(sample.as_of)
         assert manager.observe_tick('NIFTY 50', 101, created - timedelta(seconds=1), created) == record
         assert manager.observe_tick('NIFTY 50', 101, created + timedelta(seconds=1),
-            created + timedelta(seconds=70)) == record
+            created + timedelta(seconds=70)) is None
+        assert manager.records[record.signal_id] == record
         # A newer non-breach event establishes the event-time watermark. An older
         # crossing arriving later must not create a false breach.
         assert manager.observe_tick('NIFTY 50', 99.9, created + timedelta(seconds=3),

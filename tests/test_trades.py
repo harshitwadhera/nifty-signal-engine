@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.main import create_app
 from app.config import Settings
-from app.signals.execution_models import instant
+from app.signals.execution_models import ExecutionConfig, instant
 from app.signals.models import SignalInput
 from app.trades.models import Confirmation, Closure
 from app.trades.monitor import observe
@@ -39,6 +39,7 @@ def signal(index='NIFTY', direction='CALL'):
 def service(tmp_path):
     record = signal()
     signals, stream, options = Mock(), Mock(), Mock()
+    signals.lifecycle.planner.config = ExecutionConfig()
     signals.detail.side_effect = lambda sid: {'record': deepcopy(record)} if sid == record['signal_id'] else None
     signals.current.side_effect = lambda index: {'index':index,'record':deepcopy(record), 'data_quality':{'stale':False}}
     signals.snapshot.side_effect = lambda index, option_summary=None: SignalInput(
@@ -98,6 +99,8 @@ def test_explicit_confirmation_only_quantity_and_premium(service):
 
 
 def test_early_setup_requires_explicit_manual_click_before_monitoring(service):
+    # Current price 24910 needs an actual >=1.5 R:R plan to reach eligibility.
+    service.test_record['plan']['invalidation']['level'] = 24850
     service.test_record['state'] = 'EARLY_SETUP'
     service.test_record['history'] = [{
         'state': 'EARLY_SETUP',
@@ -188,7 +191,7 @@ def test_restart_acknowledgement_close_and_history(service,tmp_path):
     _,events=observe(recovered,observation(24780,now=now+timedelta(seconds=1)),True,now+timedelta(seconds=1))
     assert not events; reopened.close()
     closed=service.close_trade(trade['trade_id'],Closure(actual_exit_premium=80))
-    assert closed['exit_option_price']==80 and closed['closed_at'] and closed['exit_underlying']==24900
+    assert closed['exit_option_price']==80 and closed['closed_at'] and closed['exit_underlying']==24910
     assert not service.active()['items']
     assert service.journal.listing()['items'][0]['status']=='USER_CLOSED'
     with pytest.raises(ValueError): entered(service)
@@ -345,6 +348,7 @@ def test_early_setup_rejects_current_risk_reward_below_minimum(service):
 
 
 def test_early_setup_rejects_no_longer_eligible_option(service):
+    service.test_record['plan']['invalidation']['level'] = 24850
     service.test_record['state'] = 'EARLY_SETUP'
     service.test_record['history'] = [{
         'state': 'EARLY_SETUP',
@@ -355,3 +359,16 @@ def test_early_setup_rejects_no_longer_eligible_option(service):
     assert setup['setup_state'] == 'NO_TRADE'
     assert setup['can_confirm'] is False
     assert 'option' in setup['reason'].lower()
+
+
+def test_early_manual_setup_retains_eligible_one_step_itm_contract(service):
+    service.test_record['state'] = 'EARLY_SETUP'
+    service.test_record['plan']['target1']['level'] = 25300
+    service.stream.live.return_value = {'websocket_status':'connected', 'instruments':[observation(24960)]}
+    # Both contracts are liquid, and the new ATM is preferred for a new plan.
+    service.options.response.return_value[1][2].update(bid=90, ask=90.1)
+    service.signals.snapshot.side_effect = lambda index, option_summary=None: SignalInput(
+        index, NOW.isoformat(), {'spot':24960}, option_summary)
+    setup = service.setup('NIFTY')
+    assert setup['can_confirm'] is True
+    assert setup['signal']['record']['plan']['option']['instrument_token'] == 123

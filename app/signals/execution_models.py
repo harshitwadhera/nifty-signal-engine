@@ -126,3 +126,4 @@ class SignalRecord:
     trigger_watch: dict = field(default_factory=dict)
     history: tuple[LifecycleEvent, ...] = ()
     outcome: dict = field(default_factory=dict)
+    entry_diagnostics: dict = field(default_factory=dict)
